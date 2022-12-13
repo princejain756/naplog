@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Naplog</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="masthead">
+    <h1>Naplog</h1>
+    <p class="tagline">Let the logs wait.</p>
+    <p class="subheading">A morning brief from local AI, built from a pasted batch of log lines.</p>
+  </header>
+
+  <main>
+    <label for="log-input">Pasted log batch</label>
+    <textarea id="log-input" rows="18" spellcheck="false"
+      placeholder="Paste log lines here. Blanks are skipped; original line numbers are kept."></textarea>
+    <p id="line-count" class="line-count"></p>
+  </main>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>
