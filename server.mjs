@@ -1,30 +1,29 @@
 import { createServer as createHttpServer } from 'node:http';
+import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 const PORT = 3217;
 const HOST = '127.0.0.1';
 
-const PAGE = `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Naplog</title>
-</head>
-<body>
-  <h1>Naplog</h1>
-  <p>Let the logs wait.</p>
-  <p>A morning brief from local AI, built from a pasted batch of log lines.</p>
-</body>
-</html>
-`;
+const STATIC_FILES = new Map([
+  ['/', [new URL('./public/index.html', import.meta.url), 'text/html; charset=utf-8']],
+  ['/style.css', [new URL('./public/style.css', import.meta.url), 'text/css; charset=utf-8']],
+  ['/app.js', [new URL('./public/app.js', import.meta.url), 'text/javascript; charset=utf-8']],
+]);
 
 export function createServer() {
-  return createHttpServer((req, res) => {
+  return createHttpServer(async (req, res) => {
     const { pathname } = new URL(req.url, 'http://localhost');
-    if (pathname === '/') {
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-      res.end(PAGE);
+    const entry = STATIC_FILES.get(pathname);
+    if (entry) {
+      if (req.method !== 'GET') {
+        res.writeHead(405, { 'content-type': 'text/plain; charset=utf-8' });
+        res.end('Method not allowed.');
+        return;
+      }
+      const [fileUrl, contentType] = entry;
+      res.writeHead(200, { 'content-type': contentType });
+      res.end(await readFile(fileUrl));
       return;
     }
     res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
