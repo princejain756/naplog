@@ -13,11 +13,20 @@
     <p class="subheading">A morning brief from local AI, built from a pasted batch of log lines.</p>
   </header>
 
-  <main>
-    <label for="log-input">Pasted log batch</label>
-    <textarea id="log-input" rows="18" spellcheck="false"
-      placeholder="Paste log lines here. Blanks are skipped; original line numbers are kept."></textarea>
-    <p id="line-count" class="line-count"></p>
+  <main class="workbench">
+    <section class="tray">
+      <label for="log-input">Pasted log batch</label>
+      <textarea id="log-input" rows="18" spellcheck="false"
+        placeholder="Paste log lines here. Blanks are skipped; original line numbers are kept."></textarea>
+      <p id="line-count" class="line-count"></p>
+      <button id="digest" type="button">Make my brief</button>
+    </section>
+
+    <section class="brief">
+      <h2>Morning brief</h2>
+      <p id="status" class="status"></p>
+      <div id="incidents" class="incidents"></div>
+    </section>
   </main>
 
   <script src="/app.js" defer></script>
