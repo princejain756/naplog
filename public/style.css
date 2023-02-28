@@ -1,3 +1,17 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0 auto;
+  max-width: 70rem;
+  padding: 2rem;
+  background: #E8EDF5;
+  color: #143B4E;
+  font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+  line-height: 1.5;
+}
+
 .masthead {
   border-bottom: 2px solid #143B4E;
   padding-bottom: 1rem;
@@ -20,17 +34,17 @@ h1 {
   max-width: 34rem;
 }
 
-main {
-  padding: 1.5rem 0;
+.workbench {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 2rem;
+  padding: 2rem 0;
 }
 
 textarea {
   width: 100%;
   font-family: Menlo, "SF Mono", Consolas, monospace;
   font-size: 0.85rem;
-}
-
-.line-count {
-  font-size: 0.85rem;
-  color: #506B7A;
-}
+  padding: 0.6rem 0.9rem;
+  border: 2px solid #143B4E;
+  border-radius: 6px;
