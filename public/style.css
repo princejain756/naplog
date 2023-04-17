@@ -102,3 +102,13 @@ button:disabled {
 .slip p {
   margin: 0.25rem 0;
   font-size: 0.92rem;
+}
+
+.slip .check {
+  color: #506B7A;
+}
+
+.slip .evidence {
+  font-family: Menlo, "SF Mono", Consolas, monospace;
+  font-size: 0.8rem;
+  color: #007C78;
