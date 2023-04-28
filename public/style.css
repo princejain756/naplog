@@ -112,3 +112,12 @@ button:disabled {
   font-family: Menlo, "SF Mono", Consolas, monospace;
   font-size: 0.8rem;
   color: #007C78;
+}
+
+.evidence-lines {
+  margin: 0.3rem 0 0;
+  padding: 0;
+  list-style: none;
+  font-family: Menlo, "SF Mono", Consolas, monospace;
+  font-size: 0.8rem;
+}
