@@ -121,3 +121,15 @@ button:disabled {
   font-family: Menlo, "SF Mono", Consolas, monospace;
   font-size: 0.8rem;
 }
+
+.evidence-lines li {
+  padding: 0.3rem 0.6rem;
+  border-left: 3px solid #FA9B7B;
+  background: #E8EDF5;
+  margin-top: 0.3rem;
+  word-break: break-word;
+}
+
+.line-count.over {
+  color: #A8503A;
+}
