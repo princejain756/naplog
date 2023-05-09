@@ -133,3 +133,14 @@ button:disabled {
 .line-count.over {
   color: #A8503A;
 }
+
+.empty-note {
+  font-style: italic;
+  color: #506B7A;
+}
+
+@media (max-width: 760px) {
+  .workbench {
+    grid-template-columns: 1fr;
+  }
+}
