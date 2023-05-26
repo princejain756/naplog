@@ -1,9 +1,13 @@
 import { createServer as createHttpServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { digestLogs } from './digest.mjs';
 
 const PORT = 3217;
 const HOST = '127.0.0.1';
+// JSON-escaping can inflate text up to 6 bytes per char; allow the full raw
+// text limit in escaped form plus a small envelope margin.
+const MAX_BODY_BYTES = 65536 * 6 + 512;
 
 const STATIC_FILES = new Map([
   ['/', [new URL('./public/index.html', import.meta.url), 'text/html; charset=utf-8']],
@@ -11,30 +15,33 @@ const STATIC_FILES = new Map([
   ['/app.js', [new URL('./public/app.js', import.meta.url), 'text/javascript; charset=utf-8']],
 ]);
 
-export function createServer() {
-  return createHttpServer(async (req, res) => {
-    const { pathname } = new URL(req.url, 'http://localhost');
-    const entry = STATIC_FILES.get(pathname);
-    if (entry) {
-      if (req.method !== 'GET') {
-        res.writeHead(405, { 'content-type': 'text/plain; charset=utf-8' });
-        res.end('Method not allowed.');
-        return;
-      }
-      const [fileUrl, contentType] = entry;
-      res.writeHead(200, { 'content-type': contentType });
-      res.end(await readFile(fileUrl));
-      return;
-    }
-    res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
-    res.end('Not found.');
-  });
+function sendJson(res, status, value) {
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
+  res.end(JSON.stringify(value));
 }
 
-const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
-if (isMain) {
-  const server = createServer();
-  server.listen(PORT, HOST, () => {
-    console.log(`Naplog listening at http://${HOST}:${PORT}`);
+function readRequestBody(req, limit) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let total = 0;
+    let overflow = false;
+    // Keep draining after the limit so the socket stays usable and the client
+    // still receives the response.
+    req.on('data', (chunk) => {
+      total += chunk.length;
+      if (total > limit) {
+        overflow = true;
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      if (overflow) {
+        reject(new Error('Request body too large.'));
+        return;
+      }
+      resolve(Buffer.concat(chunks).toString('utf8'));
+    });
+    req.on('error', reject);
   });
 }
