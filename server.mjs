@@ -45,3 +45,72 @@ function readRequestBody(req, limit) {
     req.on('error', reject);
   });
 }
+
+async function handleDigest(req, res) {
+  const contentType = (req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+  if (contentType !== 'application/json') {
+    sendJson(res, 415, { error: 'Content-Type must be application/json.', code: 'bad_type' });
+    return;
+  }
+  let payload;
+  try {
+    payload = JSON.parse(await readRequestBody(req, MAX_BODY_BYTES));
+  } catch {
+    sendJson(res, 400, { error: 'Request body is not valid JSON.', code: 'bad_input' });
+    return;
+  }
+  if (!payload || typeof payload.text !== 'string') {
+    sendJson(res, 400, { error: 'Body must be JSON with a "text" string.', code: 'bad_input' });
+    return;
+  }
+  try {
+    sendJson(res, 200, await digestLogs(payload.text));
+  } catch (err) {
+    sendJson(res, 502, { error: err.message, code: 'digest_failed' });
+  }
+}
+
+export function createServer() {
+  return createHttpServer(async (req, res) => {
+    try {
+      const { pathname } = new URL(req.url, 'http://localhost');
+
+      if (STATIC_FILES.has(pathname)) {
+        if (req.method !== 'GET') {
+          sendJson(res, 405, { error: 'Method not allowed.', code: 'method_not_allowed' });
+          return;
+        }
+        const [fileUrl, contentType] = STATIC_FILES.get(pathname);
+        const contents = await readFile(fileUrl);
+        res.writeHead(200, { 'content-type': contentType });
+        res.end(contents);
+        return;
+      }
+
+      if (pathname === '/api/digest') {
+        if (req.method !== 'POST') {
+          sendJson(res, 405, { error: 'Method not allowed.', code: 'method_not_allowed' });
+          return;
+        }
+        await handleDigest(req, res);
+        return;
+      }
+
+      sendJson(res, 404, { error: 'Not found.', code: 'not_found' });
+    } catch {
+      if (!res.headersSent) {
+        sendJson(res, 500, { error: 'Internal error.', code: 'internal' });
+      } else {
+        res.end();
+      }
+    }
+  });
+}
+
+const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+if (isMain) {
+  const server = createServer();
+  server.listen(PORT, HOST, () => {
+    console.log(`Naplog listening at http://${HOST}:${PORT}`);
+  });
+}
