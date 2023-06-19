@@ -20,6 +20,14 @@ npm start
 
 Then open <http://127.0.0.1:3217>. The server binds to loopback only.
 
-## License
+## Test
 
-MIT. See [LICENSE](LICENSE).
+```sh
+npm test
+```
+
+The suite stubs the Ollama call, so the model does not need to be running.
+
+## Configuration
+
+Model tag, endpoint, timeouts, input limits, prompt and the JSON schema the
