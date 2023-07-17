@@ -31,3 +31,9 @@ The suite stubs the Ollama call, so the model does not need to be running.
 ## Configuration
 
 Model tag, endpoint, timeouts, input limits, prompt and the JSON schema the
+model must answer with all live in `contract.json`. Both the request and the
+validator read from it, so the two cannot drift apart.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
