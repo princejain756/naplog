@@ -1,13 +1,14 @@
 import { createServer as createHttpServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { digestLogs } from './digest.mjs';
+import { digestLogs, DigestError } from './digest.mjs';
+import contract from './contract.json' with { type: 'json' };
 
 const PORT = 3217;
 const HOST = '127.0.0.1';
 // JSON-escaping can inflate text up to 6 bytes per char; allow the full raw
 // text limit in escaped form plus a small envelope margin.
-const MAX_BODY_BYTES = 65536 * 6 + 512;
+const MAX_BODY_BYTES = contract.maxInputBytes * 6 + 512;
 
 const STATIC_FILES = new Map([
   ['/', [new URL('./public/index.html', import.meta.url), 'text/html; charset=utf-8']],
@@ -26,7 +27,7 @@ function readRequestBody(req, limit) {
     let total = 0;
     let overflow = false;
     // Keep draining after the limit so the socket stays usable and the client
-    // still receives the response.
+    // still receives the 413 response.
     req.on('data', (chunk) => {
       total += chunk.length;
       if (total > limit) {
@@ -37,13 +38,28 @@ function readRequestBody(req, limit) {
     });
     req.on('end', () => {
       if (overflow) {
-        reject(new Error('Request body too large.'));
+        reject(new DigestError('too_large', `Request body over the ${limit} byte limit.`));
         return;
       }
       resolve(Buffer.concat(chunks).toString('utf8'));
     });
     req.on('error', reject);
   });
+}
+
+function digestErrorStatus(err) {
+  switch (err && err.code) {
+    case 'bad_input':
+      return 400;
+    case 'timeout':
+      return 504;
+    case 'ollama_unreachable':
+    case 'upstream_http':
+    case 'invalid_model_output':
+      return 502;
+    default:
+      return 500;
+  }
 }
 
 async function handleDigest(req, res) {
@@ -55,8 +71,12 @@ async function handleDigest(req, res) {
   let payload;
   try {
     payload = JSON.parse(await readRequestBody(req, MAX_BODY_BYTES));
-  } catch {
-    sendJson(res, 400, { error: 'Request body is not valid JSON.', code: 'bad_input' });
+  } catch (err) {
+    if (err && err.code === 'too_large') {
+      sendJson(res, 413, { error: err.message, code: 'too_large' });
+    } else {
+      sendJson(res, 400, { error: 'Request body is not valid JSON.', code: 'bad_input' });
+    }
     return;
   }
   if (!payload || typeof payload.text !== 'string') {
@@ -66,7 +86,11 @@ async function handleDigest(req, res) {
   try {
     sendJson(res, 200, await digestLogs(payload.text));
   } catch (err) {
-    sendJson(res, 502, { error: err.message, code: 'digest_failed' });
+    // Only the safe, prepared error message crosses the wire; upstream bodies
+    // and log contents are never echoed back or logged.
+    const code = err && err.code ? err.code : 'internal';
+    const message = err instanceof DigestError ? err.message : 'Digest failed.';
+    sendJson(res, digestErrorStatus(err), { error: message, code });
   }
 }
 
