@@ -1,5 +1,20 @@
 import contract from './contract.json' with { type: 'json' };
 
+const MAX_RESPONSE_BYTES = 64 * 1024;
+
+// Best-effort masking of common credential shapes only. This is not complete
+// anonymization: uncommon key names, free-form secrets and partial tokens all
+// pass through untouched.
+const KEY_VALUE_SECRET =
+  /\b(password|token|api_key|apikey|secret)\s*[=:]\s*("[^"]*"|'[^']*'|[^\s"']+)/gi;
+const BEARER_SECRET = /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi;
+
+function maskLine(text) {
+  return text
+    .replace(KEY_VALUE_SECRET, (_m, key) => `${key}=[REDACTED]`)
+    .replace(BEARER_SECRET, 'Bearer [REDACTED]');
+}
+
 export class DigestError extends Error {
   constructor(code, message) {
     super(message);
@@ -27,7 +42,7 @@ export function prepareLines(text) {
   for (let i = 0; i < raw.length; i += 1) {
     const trimmed = raw[i].trim();
     if (trimmed.length === 0) continue;
-    lines.push({ id: i + 1, text: trimmed });
+    lines.push({ id: i + 1, text: maskLine(trimmed) });
   }
   if (lines.length > contract.maxLines) {
     throw new DigestError(
@@ -130,6 +145,40 @@ export function validateDigest(value, allowedLineIds) {
   return value;
 }
 
+async function readBoundedBody(res, limit) {
+  if (res.body && typeof res.body.getReader === 'function') {
+    const reader = res.body.getReader();
+    const chunks = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > limit) {
+        try {
+          await reader.cancel();
+        } catch {
+          // cancellation is best-effort
+        }
+        throw new DigestError(
+          'invalid_model_output',
+          `Model response exceeded the ${limit} byte limit.`,
+        );
+      }
+      chunks.push(value);
+    }
+    return Buffer.concat(chunks.map((c) => Buffer.from(c))).toString('utf8');
+  }
+  const text = await res.text();
+  if (Buffer.byteLength(text, 'utf8') > limit) {
+    throw new DigestError(
+      'invalid_model_output',
+      `Model response exceeded the ${limit} byte limit.`,
+    );
+  }
+  return text;
+}
+
 export async function digestLogs(text, { fetchImpl = globalThis.fetch } = {}) {
   const started = Date.now();
   const lines = prepareLines(text);
@@ -163,9 +212,19 @@ export async function digestLogs(text, { fetchImpl = globalThis.fetch } = {}) {
     throw new DigestError('upstream_http', `Model server returned HTTP ${res.status}.`);
   }
 
+  let raw;
+  try {
+    raw = await readBoundedBody(res, MAX_RESPONSE_BYTES);
+  } catch (err) {
+    if (err instanceof DigestError) throw err;
+    if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+      throw new DigestError('timeout', `Model request timed out after ${contract.timeoutMs}ms.`);
+    }
+    throw new DigestError('invalid_model_output', 'Could not read the model response.');
+  }
   let envelope;
   try {
-    envelope = await res.json();
+    envelope = JSON.parse(raw);
   } catch {
     throw new DigestError('invalid_model_output', 'Model response was not valid JSON.');
   }
