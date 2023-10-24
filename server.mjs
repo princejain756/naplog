@@ -16,9 +16,49 @@ const STATIC_FILES = new Map([
   ['/app.js', [new URL('./public/app.js', import.meta.url), 'text/javascript; charset=utf-8']],
 ]);
 
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self'",
+  "img-src 'self'",
+  "connect-src 'self'",
+  "font-src 'self'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "frame-ancestors 'none'",
+  "form-action 'self'",
+].join('; ');
+
+function setBaseHeaders(res) {
+  res.setHeader('cache-control', 'no-store');
+  res.setHeader('content-security-policy', CSP);
+  res.setHeader('x-content-type-options', 'nosniff');
+  res.setHeader('referrer-policy', 'no-referrer');
+}
+
 function sendJson(res, status, value) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(value));
+}
+
+function boundPort(server) {
+  const address = server.address();
+  return address && typeof address === 'object' ? address.port : PORT;
+}
+
+// The server is loopback-only, so a wildcard DNS name pointing at 127.0.0.1
+// could otherwise drive it from a page open in the same browser.
+function requestAllowed(server, req) {
+  const port = boundPort(server);
+  const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
+  const host = (req.headers.host || '').toLowerCase();
+  if (!allowedHosts.has(host)) return false;
+  const origin = req.headers.origin;
+  if (origin !== undefined) {
+    const allowedOrigins = new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`]);
+    if (!allowedOrigins.has(origin)) return false;
+  }
+  return true;
 }
 
 function readRequestBody(req, limit) {
@@ -95,8 +135,13 @@ async function handleDigest(req, res) {
 }
 
 export function createServer() {
-  return createHttpServer(async (req, res) => {
+  const server = createHttpServer(async (req, res) => {
+    setBaseHeaders(res);
     try {
+      if (!requestAllowed(server, req)) {
+        sendJson(res, 403, { error: 'Forbidden.', code: 'forbidden' });
+        return;
+      }
       const { pathname } = new URL(req.url, 'http://localhost');
 
       if (STATIC_FILES.has(pathname)) {
@@ -129,6 +174,7 @@ export function createServer() {
       }
     }
   });
+  return server;
 }
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
