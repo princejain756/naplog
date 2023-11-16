@@ -4,6 +4,8 @@
   const digestBtn = document.getElementById('digest');
   const statusEl = document.getElementById('status');
   const incidentsEl = document.getElementById('incidents');
+  const loadSampleBtn = document.getElementById('load-sample');
+  const badgeEl = document.getElementById('model-badge');
   const MAX_LINES = 120;
 
   function nonBlank(text) {
@@ -24,6 +26,26 @@
   function setStatus(message, isError) {
     statusEl.textContent = message;
     statusEl.classList.toggle('error', Boolean(isError));
+  }
+
+  async function refreshStatus() {
+    badgeEl.className = 'badge badge-unknown';
+    badgeEl.textContent = 'local model: checking...';
+    try {
+      const res = await fetch('/api/status');
+      const body = await res.json();
+      if (body.ready) {
+        badgeEl.className = 'badge badge-ready';
+        badgeEl.textContent = `local model: ${body.model}`;
+      } else {
+        badgeEl.className = 'badge badge-missing';
+        badgeEl.textContent = 'local model: not ready';
+      }
+      badgeEl.title = body.message;
+    } catch {
+      badgeEl.className = 'badge badge-missing';
+      badgeEl.textContent = 'local model: unreachable';
+    }
   }
 
   function lineTextById(lines, id) {
@@ -103,7 +125,21 @@
     }
   }
 
+  loadSampleBtn.addEventListener('click', async () => {
+    setStatus('Loading the synthetic sample...');
+    try {
+      const res = await fetch('/api/sample');
+      const body = await res.json();
+      input.value = body.text;
+      updateCount();
+      setStatus('Sample loaded. Ready when you are.');
+    } catch {
+      setStatus('Could not load the sample from the local server.', true);
+    }
+  });
+
   input.addEventListener('input', updateCount);
   digestBtn.addEventListener('click', digest);
   updateCount();
+  refreshStatus();
 })();
