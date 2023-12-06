@@ -11,11 +11,15 @@
     <h1>Naplog</h1>
     <p class="tagline">Let the logs wait.</p>
     <p class="subheading">A morning brief from local AI, built from a pasted batch of log lines.</p>
+    <p id="model-badge" class="badge badge-unknown" role="status" aria-live="polite">local model: checking...</p>
   </header>
 
   <main class="workbench">
     <section class="tray">
-      <label for="log-input">Pasted log batch</label>
+      <div class="tray-head">
+        <label for="log-input">Pasted log batch</label>
+        <button id="load-sample" type="button">Load sample</button>
+      </div>
       <textarea id="log-input" rows="18" spellcheck="false"
         placeholder="Paste log lines here. Blanks are skipped; original line numbers are kept."></textarea>
       <p id="line-count" class="line-count"></p>
