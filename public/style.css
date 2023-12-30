@@ -159,3 +159,13 @@ button:disabled {
   background: #E8EDF5;
   margin-top: 0.3rem;
   word-break: break-word;
+}
+
+.line-count.over {
+  color: #A8503A;
+}
+
+.empty-note {
+  font-style: italic;
+  color: #506B7A;
+}
