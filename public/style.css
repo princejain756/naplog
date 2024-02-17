@@ -180,3 +180,17 @@ button:disabled {
   background: #FFFFFF;
   margin-top: 0.6rem;
 }
+
+.badge-ready {
+  border-color: #007C78;
+  color: #007C78;
+}
+
+.badge-missing {
+  border-color: #FA9B7B;
+  color: #A8503A;
+}
+
+.badge-unknown {
+  color: #506B7A;
+}
