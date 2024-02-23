@@ -194,3 +194,15 @@ button:disabled {
 .badge-unknown {
   color: #506B7A;
 }
+
+.tray-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.workbench {
+    grid-template-columns: 1fr;
+  }
+}
