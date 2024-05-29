@@ -10,6 +10,8 @@ const HOST = '127.0.0.1';
 // text limit in escaped form plus a small envelope margin.
 const MAX_BODY_BYTES = contract.maxInputBytes * 6 + 512;
 
+const SAMPLE_FILE = new URL('./sample.log', import.meta.url);
+
 const STATIC_FILES = new Map([
   ['/', [new URL('./public/index.html', import.meta.url), 'text/html; charset=utf-8']],
   ['/style.css', [new URL('./public/style.css', import.meta.url), 'text/css; charset=utf-8']],
@@ -136,6 +138,34 @@ async function handleDigest(req, res) {
 
 export function createServer() {
   const server = createHttpServer(async (req, res) => {
+    // Readiness is a separate concern from the digest and never touches the
+    // model, so it stays cheap and safe to poll on load.
+    async function handleStatus() {
+      const tagsUrl = new URL('/api/tags', contract.ollamaUrl).href;
+      try {
+        const res = await fetch(tagsUrl, { signal: AbortSignal.timeout(3000) });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const body = await res.json();
+        const names = Array.isArray(body.models)
+          ? body.models.map((m) => (m && typeof m.name === 'string' ? m.name : ''))
+          : [];
+        const ready = names.some((name) => name === contract.model);
+        return {
+          ready,
+          model: contract.model,
+          message: ready
+            ? `Local model ${contract.model} is available.`
+            : `Model not pulled yet. Run: ollama pull ${contract.model}`,
+        };
+      } catch {
+        return {
+          ready: false,
+          model: contract.model,
+          message: `Local Ollama is not reachable on ${new URL(contract.ollamaUrl).host}. Start it, then run: ollama pull ${contract.model}`,
+        };
+      }
+    }
+
     setBaseHeaders(res);
     try {
       if (!requestAllowed(server, req)) {
@@ -153,6 +183,24 @@ export function createServer() {
         const contents = await readFile(fileUrl);
         res.writeHead(200, { 'content-type': contentType });
         res.end(contents);
+        return;
+      }
+
+      if (pathname === '/api/status') {
+        if (req.method !== 'GET') {
+          sendJson(res, 405, { error: 'Method not allowed.', code: 'method_not_allowed' });
+          return;
+        }
+        sendJson(res, 200, await handleStatus());
+        return;
+      }
+
+      if (pathname === '/api/sample') {
+        if (req.method !== 'GET') {
+          sendJson(res, 405, { error: 'Method not allowed.', code: 'method_not_allowed' });
+          return;
+        }
+        sendJson(res, 200, { text: await readFile(SAMPLE_FILE, 'utf8') });
         return;
       }
 
