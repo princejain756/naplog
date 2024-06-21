@@ -4,6 +4,7 @@
   "timeoutMs": 180000,
   "maxInputBytes": 65536,
   "maxLines": 120,
+  "cacheEntries": 8,
   "options": {
     "temperature": 0,
     "num_ctx": 8192,
