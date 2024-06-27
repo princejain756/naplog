@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import contract from './contract.json' with { type: 'json' };
 
 const MAX_RESPONSE_BYTES = 64 * 1024;
@@ -179,9 +180,39 @@ async function readBoundedBody(res, limit) {
   return text;
 }
 
+// Validated responses only, keyed by content hash. Never holds failures.
+// Bounded by contract.cacheEntries; entries live until process restart.
+const cache = new Map();
+
+function cacheKey(lines) {
+  return createHash('sha256')
+    .update(contract.model)
+    .update('\n')
+    .update(JSON.stringify(lines))
+    .update('\n')
+    .update(contract.systemPrompt)
+    .digest('hex');
+}
+
+function cacheStore(key, result) {
+  if (cache.size >= contract.cacheEntries) {
+    cache.delete(cache.keys().next().value);
+  }
+  cache.set(key, structuredClone(result));
+}
+
 export async function digestLogs(text, { fetchImpl = globalThis.fetch } = {}) {
   const started = Date.now();
   const lines = prepareLines(text);
+  const key = cacheKey(lines);
+  const hit = cache.get(key);
+  if (hit !== undefined) {
+    const copy = structuredClone(hit);
+    copy.cached = true;
+    copy.elapsedMs = Date.now() - started;
+    return copy;
+  }
+
   const numbered = lines.map((line) => `${line.id}: ${line.text}`).join('\n');
 
   let res;
@@ -244,10 +275,13 @@ export async function digestLogs(text, { fetchImpl = globalThis.fetch } = {}) {
   const allowedIds = new Set(lines.map((line) => line.id));
   validateDigest(digest, allowedIds);
 
-  return {
+  const result = {
     incidents: digest.incidents,
     lines,
     model: contract.model,
+    cached: false,
     elapsedMs: Date.now() - started,
   };
+  cacheStore(key, result);
+  return structuredClone(result);
 }
