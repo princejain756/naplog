@@ -115,7 +115,10 @@
         return;
       }
       renderIncidents(body);
-      setStatus(`Brief ready in ${(body.elapsedMs / 1000).toFixed(1)}s.`);
+      const suffix = body.cached
+        ? " (from this session's cache)"
+        : ` in ${(body.elapsedMs / 1000).toFixed(1)}s`;
+      setStatus(`Brief ready${suffix}.`);
     } catch {
       setStatus('The local server did not answer.', true);
     } finally {
