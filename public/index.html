@@ -44,3 +44,18 @@
         <button id="clear" type="button">Clear</button>
       </div>
     </section>
+
+    <section class="brief" aria-labelledby="brief-label">
+      <div class="brief-head">
+        <h2 id="brief-label">Morning brief</h2>
+        <p class="draft-note">AI draft. Check the source lines before acting.</p>
+      </div>
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+      <div id="incidents" class="incidents" aria-live="polite"></div>
+      <p class="privacy">Runs through Ollama on this machine. Logs stay in memory. Masking catches common credential patterns, not every secret.</p>
+    </section>
+  </main>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>
