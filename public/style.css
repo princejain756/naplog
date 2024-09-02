@@ -219,3 +219,13 @@ textarea:focus-visible {
   flex-direction: column;
   gap: 1rem;
 }
+
+.slip {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-left: 5px solid var(--teal);
+  padding: 0.9rem 1.1rem;
+  transform: rotate(-0.4deg);
+  box-shadow: 0 2px 0 rgba(20, 59, 78, 0.08);
+  animation: slip-in 350ms ease-out backwards;
+}
