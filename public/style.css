@@ -229,3 +229,17 @@ textarea:focus-visible {
   box-shadow: 0 2px 0 rgba(20, 59, 78, 0.08);
   animation: slip-in 350ms ease-out backwards;
 }
+
+.slip:nth-child(even) {
+  transform: rotate(0.35deg);
+}
+
+.slip h3 {
+  font-family: Baskerville, "Baskerville Old Face", Georgia, serif;
+  font-size: 1.1rem;
+  margin: 0 0 0.35rem;
+}
+
+.slip p {
+  margin: 0.25rem 0;
+  font-size: 0.92rem;
