@@ -243,3 +243,13 @@ textarea:focus-visible {
 .slip p {
   margin: 0.25rem 0;
   font-size: 0.92rem;
+}
+
+.slip .check {
+  color: var(--muted);
+}
+
+.slip .check strong {
+  color: var(--ink);
+  font-weight: 600;
+}
