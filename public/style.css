@@ -253,3 +253,15 @@ textarea:focus-visible {
   color: var(--ink);
   font-weight: 600;
 }
+
+.evidence {
+  margin-top: 0.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.evidence-label {
+  font-size: 0.8rem;
+  color: var(--muted);
