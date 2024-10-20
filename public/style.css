@@ -265,3 +265,15 @@ textarea:focus-visible {
 .evidence-label {
   font-size: 0.8rem;
   color: var(--muted);
+}
+
+.evidence button {
+  font-family: Menlo, "SF Mono", Consolas, monospace;
+  font-size: 0.78rem;
+  padding: 0.15rem 0.55rem;
+  border-width: 1.5px;
+  border-color: var(--teal);
+  color: var(--teal);
+}
+
+.evidence button:hover:not(:disabled),
