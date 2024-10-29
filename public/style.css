@@ -277,3 +277,15 @@ textarea:focus-visible {
 }
 
 .evidence button:hover:not(:disabled),
+.evidence button[aria-expanded="true"] {
+  background: var(--teal);
+  color: var(--paper);
+}
+
+.evidence-lines {
+  flex-basis: 100%;
+  margin: 0.3rem 0 0;
+  padding: 0;
+  list-style: none;
+  font-family: Menlo, "SF Mono", Consolas, monospace;
+  font-size: 0.8rem;
