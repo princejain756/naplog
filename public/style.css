@@ -289,3 +289,13 @@ textarea:focus-visible {
   list-style: none;
   font-family: Menlo, "SF Mono", Consolas, monospace;
   font-size: 0.8rem;
+}
+
+.evidence-lines li {
+  padding: 0.3rem 0.6rem;
+  border-left: 3px solid var(--peach);
+  background: var(--mist);
+  margin-top: 0.3rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
