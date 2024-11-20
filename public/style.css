@@ -299,3 +299,14 @@ textarea:focus-visible {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+.evidence-lines .line-id {
+  color: var(--teal);
+  font-weight: 600;
+  margin-right: 0.5rem;
+}
+
+.empty-note {
+  font-style: italic;
+  color: var(--muted);
+}
