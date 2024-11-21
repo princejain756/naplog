@@ -310,3 +310,11 @@ textarea:focus-visible {
   font-style: italic;
   color: var(--muted);
 }
+
+.privacy {
+  margin-top: 2rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+  padding-top: 0.8rem;
+}
