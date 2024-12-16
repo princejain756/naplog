@@ -350,3 +350,12 @@ textarea:focus-visible {
     opacity: 1;
     transform: translateY(-3px);
   }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .masthead,
+  .workbench,
+  .slip,
+  .sleeping-server .zeds text {
+    animation: none;
+  }
