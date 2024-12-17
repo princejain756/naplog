@@ -359,3 +359,13 @@ textarea:focus-visible {
   .sleeping-server .zeds text {
     animation: none;
   }
+}
+
+@media (max-width: 760px) {
+  .masthead {
+    flex-wrap: wrap;
+  }
+  .workbench {
+    grid-template-columns: 1fr;
+  }
+}
