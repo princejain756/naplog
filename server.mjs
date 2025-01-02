@@ -48,8 +48,6 @@ function boundPort(server) {
   return address && typeof address === 'object' ? address.port : PORT;
 }
 
-// The server is loopback-only, so a wildcard DNS name pointing at 127.0.0.1
-// could otherwise drive it from a page open in the same browser.
 function requestAllowed(server, req) {
   const port = boundPort(server);
   const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
@@ -104,68 +102,83 @@ function digestErrorStatus(err) {
   }
 }
 
-async function handleDigest(req, res) {
-  const contentType = (req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
-  if (contentType !== 'application/json') {
-    sendJson(res, 415, { error: 'Content-Type must be application/json.', code: 'bad_type' });
-    return;
-  }
-  let payload;
-  try {
-    payload = JSON.parse(await readRequestBody(req, MAX_BODY_BYTES));
-  } catch (err) {
-    if (err && err.code === 'too_large') {
-      sendJson(res, 413, { error: err.message, code: 'too_large' });
-    } else {
-      sendJson(res, 400, { error: 'Request body is not valid JSON.', code: 'bad_input' });
-    }
-    return;
-  }
-  if (!payload || typeof payload.text !== 'string') {
-    sendJson(res, 400, { error: 'Body must be JSON with a "text" string.', code: 'bad_input' });
-    return;
-  }
-  try {
-    sendJson(res, 200, await digestLogs(payload.text));
-  } catch (err) {
-    // Only the safe, prepared error message crosses the wire; upstream bodies
-    // and log contents are never echoed back or logged.
-    const code = err && err.code ? err.code : 'internal';
-    const message = err instanceof DigestError ? err.message : 'Digest failed.';
-    sendJson(res, digestErrorStatus(err), { error: message, code });
-  }
-}
+export function createServer({ digest = digestLogs, statusFetch = globalThis.fetch } = {}) {
+  let digestInFlight = false;
 
-export function createServer() {
-  const server = createHttpServer(async (req, res) => {
-    // Readiness is a separate concern from the digest and never touches the
-    // model, so it stays cheap and safe to poll on load.
-    async function handleStatus() {
-      const tagsUrl = new URL('/api/tags', contract.ollamaUrl).href;
-      try {
-        const res = await fetch(tagsUrl, { signal: AbortSignal.timeout(3000) });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const body = await res.json();
-        const names = Array.isArray(body.models)
-          ? body.models.map((m) => (m && typeof m.name === 'string' ? m.name : ''))
-          : [];
-        const ready = names.some((name) => name === contract.model);
-        return {
-          ready,
-          model: contract.model,
-          message: ready
-            ? `Local model ${contract.model} is available.`
-            : `Model not pulled yet. Run: ollama pull ${contract.model}`,
-        };
-      } catch {
-        return {
-          ready: false,
-          model: contract.model,
-          message: `Local Ollama is not reachable on ${new URL(contract.ollamaUrl).host}. Start it, then run: ollama pull ${contract.model}`,
-        };
+  async function handleStatus() {
+    const tagsUrl = new URL('/api/tags', contract.ollamaUrl).href;
+    try {
+      const res = await statusFetch(tagsUrl, { signal: AbortSignal.timeout(3000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = await res.json();
+      const names = Array.isArray(body.models)
+        ? body.models.map((m) => (m && typeof m.name === 'string' ? m.name : ''))
+        : [];
+      const ready = names.some((name) => name === contract.model);
+      return {
+        ready,
+        model: contract.model,
+        message: ready
+          ? `Local model ${contract.model} is available.`
+          : `Model not pulled yet. Run: ollama pull ${contract.model}`,
+      };
+    } catch {
+      return {
+        ready: false,
+        model: contract.model,
+        message: `Local Ollama is not reachable on ${new URL(contract.ollamaUrl).host}. Start it, then run: ollama pull ${contract.model}`,
+      };
+    }
+  }
+
+  async function handleDigest(req, res) {
+    const contentType = (req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+    if (contentType !== 'application/json') {
+      sendJson(res, 415, { error: 'Content-Type must be application/json.', code: 'bad_type' });
+      return;
+    }
+    let payload;
+    try {
+      const raw = await readRequestBody(req, MAX_BODY_BYTES);
+      payload = JSON.parse(raw);
+    } catch (err) {
+      if (err && err.code === 'too_large') {
+        sendJson(res, 413, { error: err.message, code: 'too_large' });
+      } else {
+        sendJson(res, 400, { error: 'Request body is not valid JSON.', code: 'bad_input' });
       }
+      return;
     }
+    if (!payload || typeof payload.text !== 'string') {
+      sendJson(res, 400, { error: 'Body must be JSON with a "text" string.', code: 'bad_input' });
+      return;
+    }
+    // Check and set back to back with no await between them, so two requests
+    // that parse together still serialize on the single inference slot.
+    if (digestInFlight) {
+      sendJson(res, 429, {
+        error: 'A digest is already running. Try again shortly.',
+        code: 'busy',
+      });
+      return;
+    }
+    digestInFlight = true;
+    try {
+      const result = await digest(payload.text);
+      sendJson(res, 200, result);
+    } catch (err) {
+      const status = digestErrorStatus(err);
+      const code = err && err.code ? err.code : 'internal';
+      // Only the safe, prepared error message crosses the wire; upstream bodies
+      // and log contents are never echoed back or logged.
+      const message = err instanceof DigestError ? err.message : 'Digest failed.';
+      sendJson(res, status, { error: message, code });
+    } finally {
+      digestInFlight = false;
+    }
+  }
 
+  const server = createHttpServer(async (req, res) => {
     setBaseHeaders(res);
     try {
       if (!requestAllowed(server, req)) {
@@ -226,9 +239,3 @@ export function createServer() {
 }
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
-if (isMain) {
-  const server = createServer();
-  server.listen(PORT, HOST, () => {
-    console.log(`Naplog listening at http://${HOST}:${PORT}`);
-  });
-}
