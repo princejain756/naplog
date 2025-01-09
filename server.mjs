@@ -239,3 +239,9 @@ export function createServer({ digest = digestLogs, statusFetch = globalThis.fet
 }
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+if (isMain) {
+  const server = createServer();
+  server.listen(PORT, HOST, () => {
+    console.log(`Naplog listening at http://${HOST}:${PORT}`);
+  });
+}
