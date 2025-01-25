@@ -69,3 +69,13 @@ still need the same eyeball check the UI asks for.
 - Input is limited to 120 nonblank lines and 64 KiB of UTF-8.
 - Masking is best-effort pattern matching, not complete anonymization.
   Unusual key names and free-form secrets pass through.
+- The output is an AI draft. The model can be wrong, can miss issues, and its
+  "suggested check" is only a suggestion. Evidence links show which lines the
+  claim points at; they do not prove the claim is supported.
+- An empty brief means "no issues identified in this batch". It is not a
+  health check, and nothing here performs remediation or runs commands.
+- Only one digest runs at a time; concurrent requests get HTTP 429.
+
+## Privacy
+
+The server binds to 127.0.0.1, accepts only matching Host/Origin headers,
