@@ -79,3 +79,14 @@ still need the same eyeball check the UI asks for.
 ## Privacy
 
 The server binds to 127.0.0.1, accepts only matching Host/Origin headers,
+sends no analytics or telemetry, and never logs request bodies or model
+output. Log text lives in memory only and is not written to disk.
+
+## License
+
+Code: MIT, copyright Prince Jain 2026. See [LICENSE](LICENSE).
+
+The Gemma model is distributed under its own
+[Gemma Terms of Use](https://ai.google.dev/gemma/terms), which are separate
+from this project's code license. AI assistance was used in building this
+project.
