@@ -61,13 +61,17 @@ function isPlainObject(value) {
 }
 
 function requireExactKeys(obj, keys, where) {
-  for (const key of keys) {
+  const actual = Object.keys(obj).sort();
+  const expected = [...keys].sort();
+  for (const key of expected) {
     if (!Object.hasOwn(obj, key)) {
       throw new DigestError('invalid_model_output', `${where} is missing required key "${key}".`);
     }
   }
-  for (const key of Object.keys(obj)) {
-    if (!keys.includes(key)) {
+  for (const key of actual) {
+    if (!expected.includes(key)) {
+      // static wording: key names come from untrusted model output and must
+      // not leak into error text
       throw new DigestError('invalid_model_output', `${where} has an unexpected key.`);
     }
   }
@@ -132,7 +136,10 @@ export function validateDigest(value, allowedLineIds) {
         );
       }
       if (seen.has(id)) {
-        throw new DigestError('invalid_model_output', `${where}.evidence repeats a line id.`);
+        throw new DigestError(
+          'invalid_model_output',
+          `${where}.evidence repeats a line id.`,
+        );
       }
       seen.add(id);
       if (!allowed.has(id)) {
@@ -214,33 +221,41 @@ export async function digestLogs(text, { fetchImpl = globalThis.fetch } = {}) {
   }
 
   const numbered = lines.map((line) => `${line.id}: ${line.text}`).join('\n');
+  const messages = [
+    { role: 'system', content: contract.systemPrompt },
+    { role: 'user', content: contract.userPrefix + numbered + contract.userSuffix },
+  ];
+  const body = JSON.stringify({
+    model: contract.model,
+    messages,
+    format: contract.schema,
+    stream: false,
+    options: contract.options,
+  });
 
   let res;
   try {
     res = await fetchImpl(contract.ollamaUrl, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        model: contract.model,
-        messages: [
-          { role: 'system', content: contract.systemPrompt },
-          { role: 'user', content: contract.userPrefix + numbered + contract.userSuffix },
-        ],
-        format: contract.schema,
-        stream: false,
-        options: contract.options,
-      }),
+      body,
       signal: AbortSignal.timeout(contract.timeoutMs),
     });
   } catch (err) {
     if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
-      throw new DigestError('timeout', `Model request timed out after ${contract.timeoutMs}ms.`);
+      throw new DigestError(
+        'timeout',
+        `Model request timed out after ${contract.timeoutMs}ms.`,
+      );
     }
     throw new DigestError('ollama_unreachable', 'Could not reach the local Ollama server.');
   }
 
   if (!res.ok) {
-    throw new DigestError('upstream_http', `Model server returned HTTP ${res.status}.`);
+    throw new DigestError(
+      'upstream_http',
+      `Model server returned HTTP ${res.status}.`,
+      );
   }
 
   let raw;
@@ -249,7 +264,10 @@ export async function digestLogs(text, { fetchImpl = globalThis.fetch } = {}) {
   } catch (err) {
     if (err instanceof DigestError) throw err;
     if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
-      throw new DigestError('timeout', `Model request timed out after ${contract.timeoutMs}ms.`);
+      throw new DigestError(
+        'timeout',
+        `Model request timed out after ${contract.timeoutMs}ms.`,
+      );
     }
     throw new DigestError('invalid_model_output', 'Could not read the model response.');
   }
