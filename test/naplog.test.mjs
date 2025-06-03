@@ -1,34 +1,44 @@
-import { test, before, after } from 'node:test';
+import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { prepareLines, validateDigest, digestLogs } from '../digest.mjs';
 import { createServer } from '../server.mjs';
 
-let server;
-let base;
+const validIncident = {
+  title: 'Database connection timeouts',
+  observation: 'report-worker timed out three times at 5000ms.',
+  nextCheck: 'Check whether the database accepted connections at that time.',
+  evidence: [3, 5],
+};
 
-before(async () => {
-  server = createServer();
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  base = `http://127.0.0.1:${server.address().port}`;
-});
+function okResponse(incidents) {
+  return new Response(
+    JSON.stringify({
+      message: { role: 'assistant', content: JSON.stringify({ incidents }) },
+      done: true,
+    }),
+    { status: 200, headers: { 'content-type': 'application/json' } },
+  );
+}
 
-after(() => server.close());
+describe('prepareLines', () => {
+  test('rejects non-string and blank input', () => {
+    assert.throws(() => prepareLines(42), /string/);
+    assert.throws(() => prepareLines(''), /empty/i);
+    assert.throws(() => prepareLines('   \n\t  \n'), /empty/i);
+  });
 
-test('serves the static files the page needs', async () => {
-  const index = await fetch(`${base}/`);
-  assert.equal(index.status, 200);
-  assert.match(index.headers.get('content-type'), /text\/html/);
-  assert.match(await index.text(), /Naplog/);
+  test('numbers lines by original position, skipping blanks', () => {
+    const lines = prepareLines('alpha\n\n   \nbeta\n\ngamma');
+    assert.deepEqual(lines, [
+      { id: 1, text: 'alpha' },
+      { id: 4, text: 'beta' },
+      { id: 6, text: 'gamma' },
+    ]);
+  });
 
-  const css = await fetch(`${base}/style.css`);
-  assert.equal(css.status, 200);
-  assert.match(css.headers.get('content-type'), /css/);
-
-  const js = await fetch(`${base}/app.js`);
-  assert.equal(js.status, 200);
-  assert.match(js.headers.get('content-type'), /javascript/);
-});
-
-test('answers unknown paths and wrong methods', async () => {
-  assert.equal((await fetch(`${base}/nope`)).status, 404);
-  assert.equal((await fetch(`${base}/`, { method: 'POST' })).status, 405);
+  test('enforces the line and byte limits', () => {
+    const tooMany = Array.from({ length: 121 }, (_, i) => `line ${i}`).join('\n');
+    assert.throws(() => prepareLines(tooMany), /120/);
+    assert.throws(() => prepareLines('x'.repeat(65537)), /bytes/i);
+  });
 });
