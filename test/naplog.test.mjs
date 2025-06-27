@@ -42,3 +42,18 @@ describe('prepareLines', () => {
     assert.throws(() => prepareLines('x'.repeat(65537)), /bytes/i);
   });
 });
+
+describe('validateDigest', () => {
+  test('accepts a valid digest and empty incidents', () => {
+    assert.doesNotThrow(() => validateDigest({ incidents: [validIncident] }));
+    assert.doesNotThrow(() => validateDigest({ incidents: [] }));
+  });
+
+  test('rejects missing fields and bad evidence', () => {
+    assert.throws(() => validateDigest(null));
+    assert.throws(() => validateDigest({}), /incidents/);
+    assert.throws(() => validateDigest({ incidents: [{ ...validIncident, title: ' ' }] }), /title/);
+    assert.throws(() => validateDigest({ incidents: [{ ...validIncident, evidence: [] }] }), /evidence/);
+    assert.throws(() => validateDigest({ incidents: [{ ...validIncident, evidence: ['3'] }] }), /evidence/);
+  });
+});
