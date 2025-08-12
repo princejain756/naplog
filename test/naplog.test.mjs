@@ -1,7 +1,8 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { prepareLines, validateDigest, digestLogs } from '../digest.mjs';
+import { prepareLines, validateDigest, digestLogs, DigestError } from '../digest.mjs';
 import { createServer } from '../server.mjs';
+import contract from '../contract.json' with { type: 'json' };
 
 const validIncident = {
   title: 'Database connection timeouts',
@@ -36,25 +37,73 @@ describe('prepareLines', () => {
     ]);
   });
 
-  test('enforces the line and byte limits', () => {
-    const tooMany = Array.from({ length: 121 }, (_, i) => `line ${i}`).join('\n');
-    assert.throws(() => prepareLines(tooMany), /120/);
-    assert.throws(() => prepareLines('x'.repeat(65537)), /bytes/i);
+  test('enforces the line and byte limits from the contract', () => {
+    const tooMany = Array.from({ length: contract.maxLines + 1 }, (_, i) => `line ${i}`).join('\n');
+    assert.throws(() => prepareLines(tooMany), new RegExp(`${contract.maxLines}`));
+    assert.throws(() => prepareLines('x'.repeat(contract.maxInputBytes + 1)), /bytes/i);
   });
 });
 
 describe('validateDigest', () => {
+  const ids = new Set([1, 2, 3, 4, 5]);
+
   test('accepts a valid digest and empty incidents', () => {
-    assert.doesNotThrow(() => validateDigest({ incidents: [validIncident] }));
-    assert.doesNotThrow(() => validateDigest({ incidents: [] }));
+    assert.doesNotThrow(() => validateDigest({ incidents: [validIncident] }, ids));
+    assert.doesNotThrow(() => validateDigest({ incidents: [] }, ids));
   });
 
-  test('rejects missing fields and bad evidence', () => {
-    assert.throws(() => validateDigest(null));
-    assert.throws(() => validateDigest({}), /incidents/);
-    assert.throws(() => validateDigest({ incidents: [{ ...validIncident, title: ' ' }] }), /title/);
-    assert.throws(() => validateDigest({ incidents: [{ ...validIncident, evidence: [] }] }), /evidence/);
-    assert.throws(() => validateDigest({ incidents: [{ ...validIncident, evidence: ['3'] }] }), /evidence/);
+  test('rejects non-plain-objects and unknown top-level keys', () => {
+    assert.throws(() => validateDigest(null, ids));
+    assert.throws(() => validateDigest([], ids));
+    assert.throws(() => validateDigest({ incidents: [], extra: 1 }, ids), /extra|key/i);
+    assert.throws(() => validateDigest({}, ids), /incidents/);
+  });
+
+  test('rejects unknown and missing incident keys', () => {
+    assert.throws(
+      () => validateDigest({ incidents: [{ ...validIncident, evil: true }] }, ids),
+      /evil|key/i,
+    );
+    const { evidence, ...noEvidence } = validIncident;
+    assert.throws(() => validateDigest({ incidents: [noEvidence] }, ids), /evidence/);
+  });
+
+  test('rejects empty strings and enforces length bounds', () => {
+    assert.throws(
+      () => validateDigest({ incidents: [{ ...validIncident, title: '   ' }] }, ids),
+      /title/,
+    );
+    assert.throws(
+      () => validateDigest({ incidents: [{ ...validIncident, title: 't'.repeat(101) }] }, ids),
+      /title/,
+    );
+    assert.throws(
+      () => validateDigest({ incidents: [{ ...validIncident, nextCheck: 'n'.repeat(251) }] }, ids),
+      /nextCheck/,
+    );
+  });
+
+  test('allows at most five incidents', () => {
+    assert.throws(
+      () => validateDigest({ incidents: Array(6).fill(validIncident) }, ids),
+      /5|incident/i,
+    );
+    assert.doesNotThrow(() => validateDigest({ incidents: Array(5).fill(validIncident) }, ids));
+  });
+
+  test('rejects bad evidence arrays', () => {
+    const bad = [
+      { ...validIncident, evidence: [] },
+      { ...validIncident, evidence: 'not-array' },
+      { ...validIncident, evidence: [3, 3] },
+      { ...validIncident, evidence: [3.5] },
+      { ...validIncident, evidence: [0] },
+      { ...validIncident, evidence: [99] },
+      { ...validIncident, evidence: ['3'] },
+    ];
+    for (const incident of bad) {
+      assert.throws(() => validateDigest({ incidents: [incident] }, ids), /evidence|line|id/i);
+    }
   });
 });
 
@@ -63,14 +112,14 @@ describe('digestLogs', () => {
     const calls = [];
     const fetchImpl = async (url, init) => {
       calls.push({ url, init });
-      return okResponse([validIncident]);
+      return okResponse([{ ...validIncident, evidence: [1, 3] }]);
     };
     const result = await digestLogs('alpha\n\nerror beta', { fetchImpl });
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].url, 'http://127.0.0.1:11434/api/chat');
+    assert.equal(calls[0].url, contract.ollamaUrl);
     const sent = JSON.parse(calls[0].init.body);
     assert.equal(sent.stream, false);
-    assert.equal(sent.messages[1].role, 'user');
+    assert.deepEqual(sent.options, contract.options);
     assert.ok(sent.messages[1].content.includes('3: error beta'));
     assert.deepEqual(result.lines, [
       { id: 1, text: 'alpha' },
@@ -79,17 +128,75 @@ describe('digestLogs', () => {
     assert.equal(result.incidents.length, 1);
   });
 
-  test('rejects HTTP errors and unparseable content', async () => {
-    await assert.rejects(
-      digestLogs('line', { fetchImpl: async () => new Response('boom', { status: 500 }) }),
-      /HTTP 500/,
-    );
+  test('rejects on HTTP errors without exposing the upstream body', async () => {
     await assert.rejects(
       digestLogs('line', {
-        fetchImpl: async () =>
-          new Response(JSON.stringify({ message: { content: 'nope' } }), { status: 200 }),
+        fetchImpl: async () => new Response('password=hunter2 upstream detail', { status: 500 }),
       }),
-      /JSON/,
+      (err) => {
+        assert.equal(err.code, 'upstream_http');
+        assert.ok(!err.message.includes('hunter2'));
+        return true;
+      },
+    );
+  });
+
+  test('rejects an unparseable or incomplete envelope', async () => {
+    for (const body of [
+      'not json at all',
+      JSON.stringify({ message: { content: '{}' }, done: false }),
+      JSON.stringify({ message: {}, done: true }),
+    ]) {
+      await assert.rejects(
+        digestLogs('line', { fetchImpl: async () => new Response(body, { status: 200 }) }),
+        (err) => err.code === 'invalid_model_output',
+      );
+    }
+  });
+
+  test('rejects non-JSON content and out-of-range evidence', async () => {
+    const badContent = JSON.stringify({ message: { content: 'all good' }, done: true });
+    await assert.rejects(
+      digestLogs('line', { fetchImpl: async () => new Response(badContent, { status: 200 }) }),
+      (err) => err.code === 'invalid_model_output',
+    );
+
+    const badSchema = JSON.stringify({
+      message: { content: JSON.stringify({ incidents: [{ ...validIncident, evidence: [77] }] }) },
+      done: true,
+    });
+    await assert.rejects(
+      digestLogs('line', { fetchImpl: async () => new Response(badSchema, { status: 200 }) }),
+      /evidence|line|id/i,
+    );
+  });
+
+  test('maps fetch aborts to timeout failures', async () => {
+    await assert.rejects(
+      digestLogs('line', {
+        fetchImpl: async () => {
+          throw new DOMException('The operation timed out', 'TimeoutError');
+        },
+      }),
+      (err) => err.code === 'timeout',
+    );
+  });
+
+  test('reaches the fixed loopback endpoint, never a remote one', async () => {
+    let seen;
+    await digestLogs('line', {
+      fetchImpl: async (url) => {
+        seen = url;
+        return okResponse([]);
+      },
+    });
+    assert.equal(new URL(seen).host, '127.0.0.1:11434');
+  });
+
+  test('raises DigestError, not a bare Error', async () => {
+    await assert.rejects(
+      digestLogs('  ', { fetchImpl: async () => okResponse([]) }),
+      DigestError,
     );
   });
 });
@@ -128,6 +235,9 @@ describe('http server', () => {
   });
 
   test('POST /api/digest validates content type and body', async () => {
+    const noType = await fetch(`${base}/api/digest`, { method: 'POST', body: '{}' });
+    assert.equal(noType.status, 415);
+
     const wrongType = await fetch(`${base}/api/digest`, {
       method: 'POST',
       headers: { 'content-type': 'text/plain' },
@@ -148,5 +258,22 @@ describe('http server', () => {
       body: JSON.stringify({ text: 42 }),
     });
     assert.equal(wrongShape.status, 400);
+
+    const tooBig = await fetch(`${base}/api/digest`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'x'.repeat(contract.maxInputBytes * 7) }),
+    });
+    assert.equal(tooBig.status, 413);
+  });
+
+  test('POST /api/digest rejects bad log input with a useful code', async () => {
+    const res = await fetch(`${base}/api/digest`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: '   \n  ' }),
+    });
+    assert.equal(res.status, 400);
+    assert.equal((await res.json()).code, 'bad_input');
   });
 });
