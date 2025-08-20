@@ -37,6 +37,37 @@ describe('prepareLines', () => {
     ]);
   });
 
+  test('masks unquoted and quoted key=value credentials', () => {
+    const [a] = prepareLines('ERROR auth failed password=hunter2 status=500');
+    assert.equal(a.text, 'ERROR auth failed password=[REDACTED] status=500');
+
+    const [b] = prepareLines('ERROR token="abc def 123" api_key=\'sekret\'');
+    assert.ok(!b.text.includes('abc def 123'));
+    assert.ok(!b.text.includes('sekret'));
+    assert.ok(b.text.includes('token=[REDACTED]'));
+    assert.ok(b.text.includes('api_key=[REDACTED]'));
+  });
+
+  test('masks secret= values and Bearer tokens', () => {
+    const [a] = prepareLines('WARN secret=t0psecret rest of line');
+    assert.ok(a.text.includes('secret=[REDACTED]'));
+    assert.ok(!a.text.includes('t0psecret'));
+
+    const [b] = prepareLines('WARN auth Authorization: Bearer eyJhbGciOiJ9.payload.sig');
+    assert.ok(b.text.includes('Bearer [REDACTED]'));
+    assert.ok(!b.text.includes('eyJhbGciOiJ9'));
+  });
+
+  test('does not mask non-credential key=value pairs', () => {
+    const [line] = prepareLines('INFO api health probe status=200 attempt=1');
+    assert.equal(line.text, 'INFO api health probe status=200 attempt=1');
+  });
+
+  test('masks before the line count, so masking cannot change it', () => {
+    const lines = prepareLines('a password=1\n\nb token=2');
+    assert.deepEqual(lines.map((l) => l.id), [1, 3]);
+  });
+
   test('enforces the line and byte limits from the contract', () => {
     const tooMany = Array.from({ length: contract.maxLines + 1 }, (_, i) => `line ${i}`).join('\n');
     assert.throws(() => prepareLines(tooMany), new RegExp(`${contract.maxLines}`));
@@ -168,6 +199,30 @@ describe('digestLogs', () => {
     await assert.rejects(
       digestLogs('line', { fetchImpl: async () => new Response(badSchema, { status: 200 }) }),
       /evidence|line|id/i,
+    );
+  });
+
+  test('rejects an oversized response body', async () => {
+    const huge = JSON.stringify({
+      message: { content: JSON.stringify({ incidents: [] }) },
+      done: true,
+    }).padEnd(70 * 1024, ' ');
+    await assert.rejects(
+      digestLogs('line', { fetchImpl: async () => new Response(huge, { status: 200 }) }),
+      /size|large|limit/i,
+    );
+  });
+
+  test('maps a mid-stream abort to a timeout failure', async () => {
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"partial":'));
+        controller.error(new DOMException('The operation timed out', 'TimeoutError'));
+      },
+    });
+    await assert.rejects(
+      digestLogs('line', { fetchImpl: async () => new Response(stream, { status: 200 }) }),
+      (err) => err.code === 'timeout',
     );
   });
 
