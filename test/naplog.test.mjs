@@ -1,5 +1,6 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { get as httpGet } from 'node:http';
 import { prepareLines, validateDigest, digestLogs, DigestError } from '../digest.mjs';
 import { createServer } from '../server.mjs';
 import contract from '../contract.json' with { type: 'json' };
@@ -10,6 +11,16 @@ const validIncident = {
   nextCheck: 'Check whether the database accepted connections at that time.',
   evidence: [3, 5],
 };
+
+function rawGet(url, headers) {
+  return new Promise((resolve, reject) => {
+    const req = httpGet(url, { headers }, (res) => {
+      res.resume();
+      res.on('end', () => resolve(res));
+    });
+    req.on('error', reject);
+  });
+}
 
 function okResponse(incidents) {
   return new Response(
@@ -285,8 +296,38 @@ describe('http server', () => {
 
   test('answers unknown paths and wrong methods', async () => {
     assert.equal((await fetch(`${base}/nope`)).status, 404);
+    assert.equal((await fetch(`${base}/missing`, { method: 'DELETE' })).status, 404);
     assert.equal((await fetch(`${base}/`, { method: 'POST' })).status, 405);
     assert.equal((await fetch(`${base}/api/digest`)).status, 405);
+    assert.equal((await fetch(`${base}/style.css`, { method: 'PUT' })).status, 405);
+  });
+
+  test('serves only the static allowlist', async () => {
+    assert.equal((await fetch(`${base}/contract.json`)).status, 404);
+    assert.equal((await fetch(`${base}/../contract.json`)).status, 404);
+    assert.equal((await fetch(`${base}/%2e%2e/contract.json`)).status, 404);
+  });
+
+  test('sets no-store and a restrictive same-origin CSP', async () => {
+    const res = await fetch(`${base}/`);
+    assert.equal(res.headers.get('cache-control'), 'no-store');
+    const csp = res.headers.get('content-security-policy');
+    assert.match(csp, /default-src 'self'/);
+    assert.match(csp, /frame-ancestors 'none'/);
+    assert.match(csp, /object-src 'none'/);
+    assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+  });
+
+  test('rejects foreign Host and Origin headers', async () => {
+    // undici fetch silently overrides Host, so spoof it with a raw request
+    const badHost = await rawGet(`${base}/`, { host: 'evil.example.com' });
+    assert.equal(badHost.statusCode, 403);
+    const badOrigin = await fetch(`${base}/`, {
+      headers: { origin: 'https://evil.example.com' },
+    });
+    assert.equal(badOrigin.status, 403);
+    const goodOrigin = await fetch(`${base}/`, { headers: { origin: base } });
+    assert.equal(goodOrigin.status, 200);
   });
 
   test('POST /api/digest validates content type and body', async () => {
