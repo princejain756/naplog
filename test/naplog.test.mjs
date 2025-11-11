@@ -1,6 +1,7 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { get as httpGet } from 'node:http';
+import { readFile } from 'node:fs/promises';
 import { prepareLines, validateDigest, digestLogs, DigestError } from '../digest.mjs';
 import { createServer } from '../server.mjs';
 import contract from '../contract.json' with { type: 'json' };
@@ -361,6 +362,39 @@ describe('http server', () => {
       body: JSON.stringify({ text: 'x'.repeat(contract.maxInputBytes * 7) }),
     });
     assert.equal(tooBig.status, 413);
+  });
+
+  test('GET /api/sample returns the synthetic sample text', async () => {
+    const res = await fetch(`${base}/api/sample`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.ok(body.text.startsWith('2026-10-23T01:00:00Z INFO scheduler nightly-report started'));
+    assert.equal(body.text, await readFile(new URL('../sample.log', import.meta.url), 'utf8'));
+  });
+
+  test('GET /api/status reports a readiness shape without remote calls', async () => {
+    const res = await fetch(`${base}/api/status`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(typeof body.ready, 'boolean');
+    assert.equal(body.model, contract.model);
+    assert.equal(typeof body.message, 'string');
+    if (!body.ready) {
+      assert.match(body.message, /ollama pull gemma3:4b/);
+    }
+  });
+
+  test('GET /api/status requires the exact model tag', async () => {
+    const exactPort = await new Promise((resolve) => {
+      const scoped = createServer();
+      scoped.listen(0, '127.0.0.1', () => resolve(scoped));
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${exactPort.address().port}/api/status`);
+      assert.equal((await res.json()).model, contract.model);
+    } finally {
+      exactPort.close();
+    }
   });
 
   test('POST /api/digest rejects bad log input with a useful code', async () => {
