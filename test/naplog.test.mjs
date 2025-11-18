@@ -157,23 +157,24 @@ describe('digestLogs', () => {
       calls.push({ url, init });
       return okResponse([{ ...validIncident, evidence: [1, 3] }]);
     };
-    const result = await digestLogs('alpha\n\nerror beta', { fetchImpl });
+    const result = await digestLogs('alpha\n\nerror beta\nrequest-contract-a', { fetchImpl });
     assert.equal(calls.length, 1);
     assert.equal(calls[0].url, contract.ollamaUrl);
     const sent = JSON.parse(calls[0].init.body);
     assert.equal(sent.stream, false);
     assert.deepEqual(sent.options, contract.options);
     assert.ok(sent.messages[1].content.includes('3: error beta'));
-    assert.deepEqual(result.lines, [
+    assert.deepEqual(result.lines.slice(0, 2), [
       { id: 1, text: 'alpha' },
       { id: 3, text: 'error beta' },
     ]);
     assert.equal(result.incidents.length, 1);
+    assert.equal(result.cached, false);
   });
 
   test('rejects on HTTP errors without exposing the upstream body', async () => {
     await assert.rejects(
-      digestLogs('line', {
+      digestLogs('line\nhttp-error-a', {
         fetchImpl: async () => new Response('password=hunter2 upstream detail', { status: 500 }),
       }),
       (err) => {
@@ -185,13 +186,15 @@ describe('digestLogs', () => {
   });
 
   test('rejects an unparseable or incomplete envelope', async () => {
-    for (const body of [
+    for (const [i, body] of [
       'not json at all',
       JSON.stringify({ message: { content: '{}' }, done: false }),
       JSON.stringify({ message: {}, done: true }),
-    ]) {
+    ].entries()) {
       await assert.rejects(
-        digestLogs('line', { fetchImpl: async () => new Response(body, { status: 200 }) }),
+        digestLogs(`line\nbad-envelope-${i}`, {
+          fetchImpl: async () => new Response(body, { status: 200 }),
+        }),
         (err) => err.code === 'invalid_model_output',
       );
     }
@@ -200,7 +203,9 @@ describe('digestLogs', () => {
   test('rejects non-JSON content and out-of-range evidence', async () => {
     const badContent = JSON.stringify({ message: { content: 'all good' }, done: true });
     await assert.rejects(
-      digestLogs('line', { fetchImpl: async () => new Response(badContent, { status: 200 }) }),
+      digestLogs('line\nbad-content-a', {
+        fetchImpl: async () => new Response(badContent, { status: 200 }),
+      }),
       (err) => err.code === 'invalid_model_output',
     );
 
@@ -209,7 +214,9 @@ describe('digestLogs', () => {
       done: true,
     });
     await assert.rejects(
-      digestLogs('line', { fetchImpl: async () => new Response(badSchema, { status: 200 }) }),
+      digestLogs('line\nbad-schema-a', {
+        fetchImpl: async () => new Response(badSchema, { status: 200 }),
+      }),
       /evidence|line|id/i,
     );
   });
@@ -220,7 +227,9 @@ describe('digestLogs', () => {
       done: true,
     }).padEnd(70 * 1024, ' ');
     await assert.rejects(
-      digestLogs('line', { fetchImpl: async () => new Response(huge, { status: 200 }) }),
+      digestLogs('line\nhuge-body-a', {
+        fetchImpl: async () => new Response(huge, { status: 200 }),
+      }),
       /size|large|limit/i,
     );
   });
@@ -233,14 +242,16 @@ describe('digestLogs', () => {
       },
     });
     await assert.rejects(
-      digestLogs('line', { fetchImpl: async () => new Response(stream, { status: 200 }) }),
+      digestLogs('line\nmidstream-a', {
+        fetchImpl: async () => new Response(stream, { status: 200 }),
+      }),
       (err) => err.code === 'timeout',
     );
   });
 
   test('maps fetch aborts to timeout failures', async () => {
     await assert.rejects(
-      digestLogs('line', {
+      digestLogs('line\ntimeout-a', {
         fetchImpl: async () => {
           throw new DOMException('The operation timed out', 'TimeoutError');
         },
@@ -251,13 +262,63 @@ describe('digestLogs', () => {
 
   test('reaches the fixed loopback endpoint, never a remote one', async () => {
     let seen;
-    await digestLogs('line', {
+    await digestLogs('line\nendpoint-a', {
       fetchImpl: async (url) => {
         seen = url;
         return okResponse([]);
       },
     });
     assert.equal(new URL(seen).host, '127.0.0.1:11434');
+  });
+
+  test('does not cache failures', async () => {
+    let n = 0;
+    const fetchImpl = async () => {
+      n += 1;
+      return new Response('boom', { status: 500 });
+    };
+    await assert.rejects(digestLogs('line\nnocache-a', { fetchImpl }));
+    await assert.rejects(digestLogs('line\nnocache-a', { fetchImpl }));
+    assert.equal(n, 2);
+  });
+
+  test('caches repeated successful digests without another request', async () => {
+    let calls = 0;
+    const fetchImpl = async () => {
+      calls += 1;
+      return okResponse([{ ...validIncident, evidence: [1] }]);
+    };
+    const first = await digestLogs('line\n\nline2\ncached-input-a', { fetchImpl });
+    const second = await digestLogs('line\n\nline2\ncached-input-a', { fetchImpl });
+    assert.equal(calls, 1);
+    assert.equal(first.cached, false);
+    assert.equal(second.cached, true);
+    assert.deepEqual(second.incidents, first.incidents);
+  });
+
+  test('evicts the oldest entry once the cache is full', async () => {
+    let calls = 0;
+    const fetchImpl = async () => {
+      calls += 1;
+      return okResponse([]);
+    };
+    // one more than the cache holds, so every earlier entry is pushed out
+    for (let i = 0; i <= contract.cacheEntries; i += 1) {
+      await digestLogs(`fill-${i}`, { fetchImpl });
+    }
+    const before = calls;
+    await digestLogs('fill-0', { fetchImpl });
+    assert.equal(calls, before + 1);
+  });
+
+  test('returns copies so callers cannot mutate the cache', async () => {
+    const fetchImpl = async () => okResponse([{ ...validIncident, evidence: [1] }]);
+    const first = await digestLogs('line\nisolation-a', { fetchImpl });
+    first.incidents[0].title = 'MUTATED';
+    first.lines[0].text = 'MUTATED';
+    const second = await digestLogs('line\nisolation-a', { fetchImpl });
+    assert.equal(second.incidents[0].title, validIncident.title);
+    assert.equal(second.lines[0].text, 'line');
   });
 
   test('raises DigestError, not a bare Error', async () => {
