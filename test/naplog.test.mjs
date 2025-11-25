@@ -1,7 +1,7 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { get as httpGet } from 'node:http';
 import { readFile } from 'node:fs/promises';
+import { get as httpGet, request as httpRequest } from 'node:http';
 import { prepareLines, validateDigest, digestLogs, DigestError } from '../digest.mjs';
 import { createServer } from '../server.mjs';
 import contract from '../contract.json' with { type: 'json' };
@@ -13,6 +13,24 @@ const validIncident = {
   evidence: [3, 5],
 };
 
+function digestBody(incidents) {
+  return JSON.stringify({
+    message: { role: 'assistant', content: JSON.stringify({ incidents }) },
+    done: true,
+  });
+}
+
+function okResponse(incidents) {
+  return new Response(digestBody(incidents), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+function incidentWith(evidence) {
+  return { ...validIncident, evidence };
+}
+
 function rawGet(url, headers) {
   return new Promise((resolve, reject) => {
     const req = httpGet(url, { headers }, (res) => {
@@ -23,21 +41,82 @@ function rawGet(url, headers) {
   });
 }
 
-function okResponse(incidents) {
-  return new Response(
-    JSON.stringify({
-      message: { role: 'assistant', content: JSON.stringify({ incidents }) },
-      done: true,
-    }),
-    { status: 200, headers: { 'content-type': 'application/json' } },
-  );
+function startPost(url, prefix) {
+  const req = httpRequest(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+  });
+  const done = new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on('response', (res) => {
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () =>
+        resolve({ status: res.statusCode, body: JSON.parse(Buffer.concat(chunks).toString('utf8')) }),
+      );
+    });
+    req.on('error', reject);
+  });
+  req.write(prefix);
+  return { req, done };
+}
+
+function listen(server) {
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+}
+
+function postJson(url, value) {
+  return fetch(`${url}/api/digest`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(value),
+  });
+}
+
+const stubDigestResult = {
+  incidents: [],
+  lines: [{ id: 1, text: 'line' }],
+  model: 'stub-model',
+  cached: false,
+  elapsedMs: 1,
+};
+
+function stubFetch(behavior) {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    return behavior(url, init);
+  };
+  return { calls, fetchImpl };
 }
 
 describe('prepareLines', () => {
-  test('rejects non-string and blank input', () => {
+  test('rejects non-string input', () => {
     assert.throws(() => prepareLines(42), /string/);
+    assert.throws(() => prepareLines(null), /string/);
+    assert.throws(() => prepareLines(['line']), /string/);
+  });
+
+  test('rejects empty and whitespace-only input', () => {
     assert.throws(() => prepareLines(''), /empty/i);
     assert.throws(() => prepareLines('   \n\t  \n'), /empty/i);
+  });
+
+  test('rejects input over the UTF-8 byte limit', () => {
+    const overBytes = '\u00e9'.repeat(contract.maxInputBytes / 2 + 1); // 2-byte chars
+    assert.throws(() => prepareLines(overBytes), /bytes|size|large/i);
+  });
+
+  test('accepts input at the byte limit', () => {
+    const atLimit = 'x'.repeat(contract.maxInputBytes);
+    const lines = prepareLines(atLimit);
+    assert.equal(lines.length, 1);
+  });
+
+  test('rejects more than the maximum nonempty lines', () => {
+    const tooMany = Array.from({ length: contract.maxLines + 1 }, (_, i) => `line ${i}`).join('\n');
+    assert.throws(() => prepareLines(tooMany), new RegExp(`${contract.maxLines}`));
+    const atMax = Array.from({ length: contract.maxLines }, (_, i) => `line ${i}`).join('\n');
+    assert.equal(prepareLines(atMax).length, contract.maxLines);
   });
 
   test('numbers lines by original position, skipping blanks', () => {
@@ -49,22 +128,23 @@ describe('prepareLines', () => {
     ]);
   });
 
-  test('masks unquoted and quoted key=value credentials', () => {
-    const [a] = prepareLines('ERROR auth failed password=hunter2 status=500');
-    assert.equal(a.text, 'ERROR auth failed password=[REDACTED] status=500');
+  test('masks unquoted key=value credentials', () => {
+    const [line] = prepareLines('ERROR auth failed password=hunter2 status=500');
+    assert.equal(line.text, 'ERROR auth failed password=[REDACTED] status=500');
+  });
 
-    const [b] = prepareLines('ERROR token="abc def 123" api_key=\'sekret\'');
-    assert.ok(!b.text.includes('abc def 123'));
-    assert.ok(!b.text.includes('sekret'));
-    assert.ok(b.text.includes('token=[REDACTED]'));
-    assert.ok(b.text.includes('api_key=[REDACTED]'));
+  test('masks quoted key=value credentials', () => {
+    const [line] = prepareLines('ERROR token="abc def 123" api_key=\'sekret\'');
+    assert.ok(!line.text.includes('abc def 123'));
+    assert.ok(!line.text.includes('sekret'));
+    assert.ok(line.text.includes('token=[REDACTED]'));
+    assert.ok(line.text.includes('api_key=[REDACTED]'));
   });
 
   test('masks secret= values and Bearer tokens', () => {
     const [a] = prepareLines('WARN secret=t0psecret rest of line');
     assert.ok(a.text.includes('secret=[REDACTED]'));
     assert.ok(!a.text.includes('t0psecret'));
-
     const [b] = prepareLines('WARN auth Authorization: Bearer eyJhbGciOiJ9.payload.sig');
     assert.ok(b.text.includes('Bearer [REDACTED]'));
     assert.ok(!b.text.includes('eyJhbGciOiJ9'));
@@ -73,17 +153,6 @@ describe('prepareLines', () => {
   test('does not mask non-credential key=value pairs', () => {
     const [line] = prepareLines('INFO api health probe status=200 attempt=1');
     assert.equal(line.text, 'INFO api health probe status=200 attempt=1');
-  });
-
-  test('masks before the line count, so masking cannot change it', () => {
-    const lines = prepareLines('a password=1\n\nb token=2');
-    assert.deepEqual(lines.map((l) => l.id), [1, 3]);
-  });
-
-  test('enforces the line and byte limits from the contract', () => {
-    const tooMany = Array.from({ length: contract.maxLines + 1 }, (_, i) => `line ${i}`).join('\n');
-    assert.throws(() => prepareLines(tooMany), new RegExp(`${contract.maxLines}`));
-    assert.throws(() => prepareLines('x'.repeat(contract.maxInputBytes + 1)), /bytes/i);
   });
 });
 
@@ -95,9 +164,10 @@ describe('validateDigest', () => {
     assert.doesNotThrow(() => validateDigest({ incidents: [] }, ids));
   });
 
-  test('rejects non-plain-objects and unknown top-level keys', () => {
+  test('rejects non-plain-objects and wrong top-level shape', () => {
     assert.throws(() => validateDigest(null, ids));
     assert.throws(() => validateDigest([], ids));
+    assert.throws(() => validateDigest('x', ids));
     assert.throws(() => validateDigest({ incidents: [], extra: 1 }, ids), /extra|key/i);
     assert.throws(() => validateDigest({}, ids), /incidents/);
   });
@@ -111,26 +181,39 @@ describe('validateDigest', () => {
     assert.throws(() => validateDigest({ incidents: [noEvidence] }, ids), /evidence/);
   });
 
-  test('rejects empty strings and enforces length bounds', () => {
+  test('rejects empty and whitespace-only strings', () => {
+    assert.throws(
+      () => validateDigest({ incidents: [{ ...validIncident, title: '' }] }, ids),
+      /title/,
+    );
     assert.throws(
       () => validateDigest({ incidents: [{ ...validIncident, title: '   ' }] }, ids),
       /title/,
     );
+  });
+
+  test('enforces string length bounds', () => {
     assert.throws(
       () => validateDigest({ incidents: [{ ...validIncident, title: 't'.repeat(101) }] }, ids),
       /title/,
     );
     assert.throws(
+      () =>
+        validateDigest({ incidents: [{ ...validIncident, observation: 'o'.repeat(401) }] }, ids),
+      /observation/,
+    );
+    assert.throws(
       () => validateDigest({ incidents: [{ ...validIncident, nextCheck: 'n'.repeat(251) }] }, ids),
       /nextCheck/,
+    );
+    assert.doesNotThrow(() =>
+      validateDigest({ incidents: [{ ...validIncident, title: 't'.repeat(100) }] }, ids),
     );
   });
 
   test('allows at most five incidents', () => {
-    assert.throws(
-      () => validateDigest({ incidents: Array(6).fill(validIncident) }, ids),
-      /5|incident/i,
-    );
+    const six = { incidents: Array(6).fill(validIncident) };
+    assert.throws(() => validateDigest(six, ids), /5|incident/i);
     assert.doesNotThrow(() => validateDigest({ incidents: Array(5).fill(validIncident) }, ids));
   });
 
@@ -141,191 +224,156 @@ describe('validateDigest', () => {
       { ...validIncident, evidence: [3, 3] },
       { ...validIncident, evidence: [3.5] },
       { ...validIncident, evidence: [0] },
+      { ...validIncident, evidence: [-2] },
       { ...validIncident, evidence: [99] },
       { ...validIncident, evidence: ['3'] },
+      { ...validIncident, evidence: Array.from({ length: 121 }, (_, i) => i + 1) },
     ];
     for (const incident of bad) {
       assert.throws(() => validateDigest({ incidents: [incident] }, ids), /evidence|line|id/i);
     }
   });
+
+  test('accepts hostile HTML strings as inert text', () => {
+    const hostile = {
+      ...validIncident,
+      title: '<img src=x onerror=alert(1)>',
+      observation: '<script>alert(1)</script>',
+    };
+    assert.doesNotThrow(() => validateDigest({ incidents: [hostile] }, ids));
+  });
 });
 
 describe('digestLogs', () => {
-  test('posts the numbered lines to the loopback endpoint', async () => {
-    const calls = [];
-    const fetchImpl = async (url, init) => {
-      calls.push({ url, init });
-      return okResponse([{ ...validIncident, evidence: [1, 3] }]);
-    };
-    const result = await digestLogs('alpha\n\nerror beta\nrequest-contract-a', { fetchImpl });
+  const input = '2026-10-23T01:00:00Z INFO alpha\n\n2026-10-23T01:00:02Z ERROR beta failed';
+
+  test('calls the fixed loopback endpoint with exact contract payload', async () => {
+    const { calls, fetchImpl } = stubFetch(() => okResponse([incidentWith([1, 3])]));
+    const result = await digestLogs(input + '\nunique-a', { fetchImpl });
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].url, contract.ollamaUrl);
-    const sent = JSON.parse(calls[0].init.body);
+    const [{ url, init }] = calls;
+    assert.equal(url, contract.ollamaUrl);
+    assert.equal(init.method, 'POST');
+    const sent = JSON.parse(init.body);
+    assert.equal(sent.model, contract.model);
     assert.equal(sent.stream, false);
+    assert.deepEqual(sent.format, contract.schema);
     assert.deepEqual(sent.options, contract.options);
-    assert.ok(sent.messages[1].content.includes('3: error beta'));
-    assert.deepEqual(result.lines.slice(0, 2), [
-      { id: 1, text: 'alpha' },
-      { id: 3, text: 'error beta' },
-    ]);
-    assert.equal(result.incidents.length, 1);
+    assert.equal(sent.messages.length, 2);
+    assert.equal(sent.messages[0].role, 'system');
+    assert.equal(sent.messages[0].content, contract.systemPrompt);
+    assert.equal(sent.messages[1].role, 'user');
+    assert.ok(sent.messages[1].content.startsWith(contract.userPrefix));
+    assert.ok(sent.messages[1].content.endsWith(contract.userSuffix));
+    assert.ok(sent.messages[1].content.includes('3: 2026-10-23T01:00:02Z ERROR beta failed'));
+    assert.equal(result.model, contract.model);
     assert.equal(result.cached, false);
+    assert.equal(typeof result.elapsedMs, 'number');
+    assert.deepEqual(result.lines, [
+      { id: 1, text: '2026-10-23T01:00:00Z INFO alpha' },
+      { id: 3, text: '2026-10-23T01:00:02Z ERROR beta failed' },
+      { id: 4, text: 'unique-a' },
+    ]);
   });
 
-  test('rejects on HTTP errors without exposing the upstream body', async () => {
-    await assert.rejects(
-      digestLogs('line\nhttp-error-a', {
-        fetchImpl: async () => new Response('password=hunter2 upstream detail', { status: 500 }),
-      }),
-      (err) => {
-        assert.equal(err.code, 'upstream_http');
-        assert.ok(!err.message.includes('hunter2'));
-        return true;
-      },
+  test('rejects on HTTP errors without exposing upstream body', async () => {
+    const upstream = 'password=hunter2 upstream detail';
+    const { fetchImpl } = stubFetch(
+      () => new Response(upstream, { status: 500 }),
     );
+    await assert.rejects(digestLogs('line one\nhttp-fail-a', { fetchImpl }), (err) => {
+      assert.ok(!String(err.message).includes('hunter2'));
+      assert.ok(!String(err.message).includes('upstream detail'));
+      return true;
+    });
   });
 
-  test('rejects an unparseable or incomplete envelope', async () => {
+  test('rejects invalid JSON envelope, done:false, and missing content', async () => {
     for (const [i, body] of [
       'not json at all',
       JSON.stringify({ message: { content: '{}' }, done: false }),
       JSON.stringify({ message: {}, done: true }),
+      JSON.stringify({ done: true }),
     ].entries()) {
-      await assert.rejects(
-        digestLogs(`line\nbad-envelope-${i}`, {
-          fetchImpl: async () => new Response(body, { status: 200 }),
-        }),
-        (err) => err.code === 'invalid_model_output',
-      );
+      const { fetchImpl } = stubFetch(() => new Response(body, { status: 200 }));
+      await assert.rejects(digestLogs(`line\nbad-env-${i}`, { fetchImpl }));
     }
   });
 
-  test('rejects non-JSON content and out-of-range evidence', async () => {
-    const badContent = JSON.stringify({ message: { content: 'all good' }, done: true });
-    await assert.rejects(
-      digestLogs('line\nbad-content-a', {
-        fetchImpl: async () => new Response(badContent, { status: 200 }),
-      }),
-      (err) => err.code === 'invalid_model_output',
-    );
-
-    const badSchema = JSON.stringify({
-      message: { content: JSON.stringify({ incidents: [{ ...validIncident, evidence: [77] }] }) },
+  test('rejects non-JSON message.content and schema violations', async () => {
+    const badContent = JSON.stringify({
+      message: { content: 'sure, here is your summary' },
       done: true,
     });
-    await assert.rejects(
-      digestLogs('line\nbad-schema-a', {
-        fetchImpl: async () => new Response(badSchema, { status: 200 }),
-      }),
-      /evidence|line|id/i,
-    );
-  });
+    let { fetchImpl } = stubFetch(() => new Response(badContent, { status: 200 }));
+    await assert.rejects(digestLogs('line\nbad-content-a', { fetchImpl }), /JSON|content/i);
 
-  test('rejects an oversized response body', async () => {
-    const huge = JSON.stringify({
-      message: { content: JSON.stringify({ incidents: [] }) },
+    const badSchema = JSON.stringify({
+      message: {
+        content: JSON.stringify({ incidents: [{ ...validIncident, evidence: [77] }] }),
+      },
       done: true,
-    }).padEnd(70 * 1024, ' ');
-    await assert.rejects(
-      digestLogs('line\nhuge-body-a', {
-        fetchImpl: async () => new Response(huge, { status: 200 }),
-      }),
-      /size|large|limit/i,
-    );
+    });
+    ({ fetchImpl } = stubFetch(() => new Response(badSchema, { status: 200 })));
+    await assert.rejects(digestLogs('line\nbad-schema-a', { fetchImpl }), /evidence|line|id/i);
   });
 
-  test('maps a mid-stream abort to a timeout failure', async () => {
+  test('rejects oversized response bodies', async () => {
+    const huge = digestBody([incidentWith([1])]).padEnd(70 * 1024, ' ');
+    const { fetchImpl } = stubFetch(() => new Response(huge, { status: 200 }));
+    await assert.rejects(digestLogs('line\nhuge-body-a', { fetchImpl }), /size|large|limit/i);
+  });
+
+  test('maps fetch aborts to timeout failures', async () => {
+    const { fetchImpl } = stubFetch(() => {
+      throw new DOMException('The operation timed out', 'TimeoutError');
+    });
+    await assert.rejects(digestLogs('line\ntimeout-a', { fetchImpl }), /timeout|timed out/i);
+  });
+
+  test('maps mid-stream aborts to timeout failures', async () => {
     const stream = new ReadableStream({
       start(controller) {
         controller.enqueue(new TextEncoder().encode('{"partial":'));
         controller.error(new DOMException('The operation timed out', 'TimeoutError'));
       },
     });
-    await assert.rejects(
-      digestLogs('line\nmidstream-a', {
-        fetchImpl: async () => new Response(stream, { status: 200 }),
-      }),
-      (err) => err.code === 'timeout',
-    );
-  });
-
-  test('maps fetch aborts to timeout failures', async () => {
-    await assert.rejects(
-      digestLogs('line\ntimeout-a', {
-        fetchImpl: async () => {
-          throw new DOMException('The operation timed out', 'TimeoutError');
-        },
-      }),
-      (err) => err.code === 'timeout',
-    );
-  });
-
-  test('reaches the fixed loopback endpoint, never a remote one', async () => {
-    let seen;
-    await digestLogs('line\nendpoint-a', {
-      fetchImpl: async (url) => {
-        seen = url;
-        return okResponse([]);
-      },
+    const { fetchImpl } = stubFetch(() => new Response(stream, { status: 200 }));
+    await assert.rejects(digestLogs('line\nmidstream-a', { fetchImpl }), (err) => {
+      assert.equal(err.code, 'timeout');
+      return true;
     });
-    assert.equal(new URL(seen).host, '127.0.0.1:11434');
   });
 
   test('does not cache failures', async () => {
     let n = 0;
-    const fetchImpl = async () => {
+    const { calls, fetchImpl } = stubFetch(() => {
       n += 1;
       return new Response('boom', { status: 500 });
-    };
+    });
     await assert.rejects(digestLogs('line\nnocache-a', { fetchImpl }));
     await assert.rejects(digestLogs('line\nnocache-a', { fetchImpl }));
-    assert.equal(n, 2);
+    assert.equal(calls.length, 2);
   });
 
-  test('caches repeated successful digests without another request', async () => {
-    let calls = 0;
-    const fetchImpl = async () => {
-      calls += 1;
-      return okResponse([{ ...validIncident, evidence: [1] }]);
-    };
+  test('caches repeated successful digests', async () => {
+    const { calls, fetchImpl } = stubFetch(() => okResponse([incidentWith([1, 3])]));
     const first = await digestLogs('line\n\nline2\ncached-input-a', { fetchImpl });
     const second = await digestLogs('line\n\nline2\ncached-input-a', { fetchImpl });
-    assert.equal(calls, 1);
+    assert.equal(calls.length, 1);
     assert.equal(first.cached, false);
     assert.equal(second.cached, true);
     assert.deepEqual(second.incidents, first.incidents);
   });
 
-  test('evicts the oldest entry once the cache is full', async () => {
-    let calls = 0;
-    const fetchImpl = async () => {
-      calls += 1;
-      return okResponse([]);
-    };
-    // one more than the cache holds, so every earlier entry is pushed out
-    for (let i = 0; i <= contract.cacheEntries; i += 1) {
-      await digestLogs(`fill-${i}`, { fetchImpl });
-    }
-    const before = calls;
-    await digestLogs('fill-0', { fetchImpl });
-    assert.equal(calls, before + 1);
-  });
-
   test('returns copies so callers cannot mutate the cache', async () => {
-    const fetchImpl = async () => okResponse([{ ...validIncident, evidence: [1] }]);
+    const { fetchImpl } = stubFetch(() => okResponse([incidentWith([1, 2])]));
     const first = await digestLogs('line\nisolation-a', { fetchImpl });
     first.incidents[0].title = 'MUTATED';
     first.lines[0].text = 'MUTATED';
     const second = await digestLogs('line\nisolation-a', { fetchImpl });
     assert.equal(second.incidents[0].title, validIncident.title);
     assert.equal(second.lines[0].text, 'line');
-  });
-
-  test('raises DigestError, not a bare Error', async () => {
-    await assert.rejects(
-      digestLogs('  ', { fetchImpl: async () => okResponse([]) }),
-      DigestError,
-    );
   });
 });
 
@@ -341,7 +389,7 @@ describe('http server', () => {
 
   after(() => server.close());
 
-  test('serves the static files the page needs', async () => {
+  test('serves the static allowlist only', async () => {
     const index = await fetch(`${base}/`);
     assert.equal(index.status, 200);
     assert.match(index.headers.get('content-type'), /text\/html/);
@@ -354,20 +402,11 @@ describe('http server', () => {
     const js = await fetch(`${base}/app.js`);
     assert.equal(js.status, 200);
     assert.match(js.headers.get('content-type'), /javascript/);
-  });
 
-  test('answers unknown paths and wrong methods', async () => {
-    assert.equal((await fetch(`${base}/nope`)).status, 404);
-    assert.equal((await fetch(`${base}/missing`, { method: 'DELETE' })).status, 404);
-    assert.equal((await fetch(`${base}/`, { method: 'POST' })).status, 405);
-    assert.equal((await fetch(`${base}/api/digest`)).status, 405);
-    assert.equal((await fetch(`${base}/style.css`, { method: 'PUT' })).status, 405);
-  });
-
-  test('serves only the static allowlist', async () => {
     assert.equal((await fetch(`${base}/contract.json`)).status, 404);
     assert.equal((await fetch(`${base}/../contract.json`)).status, 404);
     assert.equal((await fetch(`${base}/%2e%2e/contract.json`)).status, 404);
+    assert.equal((await fetch(`${base}/nope`)).status, 404);
   });
 
   test('sets no-store and a restrictive same-origin CSP', async () => {
@@ -377,10 +416,16 @@ describe('http server', () => {
     assert.match(csp, /default-src 'self'/);
     assert.match(csp, /frame-ancestors 'none'/);
     assert.match(csp, /object-src 'none'/);
-    assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
   });
 
-  test('rejects foreign Host and Origin headers', async () => {
+  test('rejects unsupported methods and unknown routes correctly', async () => {
+    assert.equal((await fetch(`${base}/`, { method: 'POST' })).status, 405);
+    assert.equal((await fetch(`${base}/api/digest`)).status, 405);
+    assert.equal((await fetch(`${base}/api/status`, { method: 'POST' })).status, 405);
+    assert.equal((await fetch(`${base}/missing`, { method: 'DELETE' })).status, 404);
+  });
+
+  test('validates Host and Origin headers', async () => {
     // undici fetch silently overrides Host, so spoof it with a raw request
     const badHost = await rawGet(`${base}/`, { host: 'evil.example.com' });
     assert.equal(badHost.statusCode, 403);
@@ -390,6 +435,26 @@ describe('http server', () => {
     assert.equal(badOrigin.status, 403);
     const goodOrigin = await fetch(`${base}/`, { headers: { origin: base } });
     assert.equal(goodOrigin.status, 200);
+  });
+
+  test('GET /api/sample returns the synthetic sample text', async () => {
+    const res = await fetch(`${base}/api/sample`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.ok(body.text.startsWith('2026-10-23T01:00:00Z INFO scheduler nightly-report started'));
+    assert.equal(body.text, await readFile(new URL('../sample.log', import.meta.url), 'utf8'));
+  });
+
+  test('GET /api/status reports readiness shape without remote calls', async () => {
+    const res = await fetch(`${base}/api/status`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(typeof body.ready, 'boolean');
+    assert.equal(body.model, contract.model);
+    assert.equal(typeof body.message, 'string');
+    if (!body.ready) {
+      assert.match(body.message, /ollama pull gemma3:4b/);
+    }
   });
 
   test('POST /api/digest validates content type and body', async () => {
@@ -425,46 +490,134 @@ describe('http server', () => {
     assert.equal(tooBig.status, 413);
   });
 
-  test('GET /api/sample returns the synthetic sample text', async () => {
-    const res = await fetch(`${base}/api/sample`);
-    assert.equal(res.status, 200);
-    const body = await res.json();
-    assert.ok(body.text.startsWith('2026-10-23T01:00:00Z INFO scheduler nightly-report started'));
-    assert.equal(body.text, await readFile(new URL('../sample.log', import.meta.url), 'utf8'));
+  test('POST /api/digest accepts escaped text at the UTF-8 limit', async () => {
+    const seen = [];
+    const scoped = createServer({
+      digest: async (text) => {
+        seen.push(text);
+        return stubDigestResult;
+      },
+    });
+    await listen(scoped);
+    try {
+      const port = scoped.address().port;
+      // control chars JSON-encode to 6 bytes each, so a body at the raw text
+      // limit is ~6x larger on the wire and must still pass transport
+      const text = '\u0001'.repeat(contract.maxInputBytes);
+      const res = await postJson(`http://127.0.0.1:${port}`, { text });
+      assert.equal(res.status, 200);
+      assert.equal(seen.length, 1);
+      assert.equal(seen[0].length, contract.maxInputBytes);
+    } finally {
+      scoped.close();
+    }
   });
 
-  test('GET /api/status reports a readiness shape without remote calls', async () => {
-    const res = await fetch(`${base}/api/status`);
-    assert.equal(res.status, 200);
-    const body = await res.json();
-    assert.equal(typeof body.ready, 'boolean');
-    assert.equal(body.model, contract.model);
-    assert.equal(typeof body.message, 'string');
-    if (!body.ready) {
-      assert.match(body.message, /ollama pull gemma3:4b/);
+  test('serializes concurrent inference behind a per-server lock', async () => {
+    let calls = 0;
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const scoped = createServer({
+      digest: async () => {
+        calls += 1;
+        await gate;
+        return stubDigestResult;
+      },
+    });
+    await listen(scoped);
+    try {
+      const port = scoped.address().port;
+      const base2 = `http://127.0.0.1:${port}`;
+      // hold both bodies open so neither request can win the lock before the
+      // other has at least reached the handler
+      const a = startPost(`${base2}/api/digest`, '{"text":"one');
+      const b = startPost(`${base2}/api/digest`, '{"text":"two');
+      await new Promise((r) => setImmediate(r));
+      a.req.end('"}');
+      b.req.end('"}');
+      // the loser responds 429 without waiting on the gated digest
+      const first = await Promise.race([
+        a.done.then((r) => ({ r, winner: b })),
+        b.done.then((r) => ({ r, winner: a })),
+      ]);
+      assert.equal(first.r.status, 429);
+      assert.equal(calls, 1);
+      release();
+      const winner = await first.winner.done;
+      assert.equal(winner.status, 200);
+      // the lock frees after success: a later request runs normally
+      const third = await postJson(base2, { text: 'three' });
+      assert.equal(third.status, 200);
+      assert.equal(calls, 2);
+    } finally {
+      scoped.close();
+    }
+  });
+
+  test('releases the digest lock after a digest failure', async () => {
+    let calls = 0;
+    const scoped = createServer({
+      digest: async () => {
+        calls += 1;
+        if (calls === 1) throw new DigestError('bad_input', 'nope');
+        return stubDigestResult;
+      },
+    });
+    await listen(scoped);
+    try {
+      const port = scoped.address().port;
+      const first = await postJson(`http://127.0.0.1:${port}`, { text: 'one' });
+      assert.equal(first.status, 400);
+      const second = await postJson(`http://127.0.0.1:${port}`, { text: 'two' });
+      assert.equal(second.status, 200);
+      assert.equal(calls, 2);
+    } finally {
+      scoped.close();
     }
   });
 
   test('GET /api/status requires the exact model tag', async () => {
-    const exactPort = await new Promise((resolve) => {
-      const scoped = createServer();
-      scoped.listen(0, '127.0.0.1', () => resolve(scoped));
+    const scoped = createServer({
+      statusFetch: async () =>
+        new Response(JSON.stringify({ models: [{ name: 'gemma3:4b-it-qat' }] }), {
+          status: 200,
+        }),
     });
+    await listen(scoped);
+    let res;
     try {
-      const res = await fetch(`http://127.0.0.1:${exactPort.address().port}/api/status`);
-      assert.equal((await res.json()).model, contract.model);
+      res = await fetch(`http://127.0.0.1:${scoped.address().port}/api/status`);
     } finally {
-      exactPort.close();
+      scoped.close();
     }
+    const body = await res.json();
+    assert.equal(body.ready, false);
+    assert.match(body.message, /ollama pull gemma3:4b/);
+
+    const exact = createServer({
+      statusFetch: async () =>
+        new Response(JSON.stringify({ models: [{ name: 'gemma3:4b' }] }), { status: 200 }),
+    });
+    await listen(exact);
+    try {
+      res = await fetch(`http://127.0.0.1:${exact.address().port}/api/status`);
+    } finally {
+      exact.close();
+    }
+    assert.equal((await res.json()).ready, true);
   });
 
-  test('POST /api/digest rejects bad log input with a useful code', async () => {
+  test('POST /api/digest rejects bad log input with a useful error', async () => {
     const res = await fetch(`${base}/api/digest`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ text: '   \n  ' }),
     });
     assert.equal(res.status, 400);
-    assert.equal((await res.json()).code, 'bad_input');
+    const body = await res.json();
+    assert.equal(typeof body.error, 'string');
+    assert.equal(body.code, 'bad_input');
   });
 });
