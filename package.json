@@ -1,0 +1,11 @@
+{
+  "name": "naplog",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local morning briefs from pasted logs via Ollama. No cloud inference.",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test"
+  }
+}

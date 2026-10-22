@@ -1,0 +1,16 @@
+2026-10-23T01:00:00Z INFO scheduler nightly-report started
+2026-10-23T01:00:01Z INFO api health probe status=200
+2026-10-23T01:00:02Z ERROR report-worker database connection timeout after 5000ms
+2026-10-23T01:00:07Z WARN report-worker retry attempt=1
+2026-10-23T01:00:12Z ERROR report-worker database connection timeout after 5000ms
+2026-10-23T01:00:17Z WARN report-worker retry attempt=2
+2026-10-23T01:00:22Z ERROR report-worker database connection timeout after 5000ms
+2026-10-23T01:00:23Z ERROR scheduler nightly-report failed after retries
+2026-10-23T01:01:00Z INFO api health probe status=200
+2026-10-23T02:00:00Z INFO backup job started
+2026-10-23T02:00:03Z ERROR backup write failed ENOSPC path=/var/backups/nightly
+2026-10-23T02:00:04Z WARN backup incomplete archive retained for inspection
+2026-10-23T02:01:00Z INFO api health probe status=200
+2026-10-23T03:00:00Z WARN auth request rejected status=401 token=demo-not-a-real-token
+2026-10-23T03:00:01Z INFO auth rejected request did not reach handler
+2026-10-23T04:00:00Z INFO api health probe status=200

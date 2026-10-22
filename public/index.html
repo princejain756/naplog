@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Naplog</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="masthead">
+    <div class="masthead-text">
+      <h1>Naplog</h1>
+      <p class="tagline">Let the logs wait.</p>
+      <p class="subheading">A morning brief from local AI. Every issue links back to the lines it came from.</p>
+    </div>
+    <svg class="sleeping-server" viewBox="0 0 140 120" role="img" aria-label="A sleeping server">
+      <rect x="20" y="30" width="100" height="66" rx="8" fill="#FFFFFF" stroke="#143B4E" stroke-width="3"/>
+      <line x1="32" y1="48" x2="108" y2="48" stroke="#143B4E" stroke-width="3"/>
+      <line x1="32" y1="66" x2="108" y2="66" stroke="#143B4E" stroke-width="3"/>
+      <circle cx="42" cy="82" r="4" fill="#007C78"/>
+      <circle cx="56" cy="82" r="4" fill="#FA9B7B"/>
+      <path d="M90 82 q10 8 20 0" stroke="#506B7A" stroke-width="3" fill="none" stroke-linecap="round"/>
+      <line x1="34" y1="96" x2="34" y2="108" stroke="#143B4E" stroke-width="3"/>
+      <line x1="106" y1="96" x2="106" y2="108" stroke="#143B4E" stroke-width="3"/>
+      <g class="zeds" fill="#007C78">
+        <text x="104" y="22" font-size="16" font-family="Georgia, serif">z</text>
+        <text x="116" y="10" font-size="12" font-family="Georgia, serif">z</text>
+      </g>
+    </svg>
+    <p id="model-badge" class="badge badge-unknown" role="status" aria-live="polite">local model: checking...</p>
+  </header>
+
+  <main class="workbench">
+    <section class="tray" aria-labelledby="tray-label">
+      <div class="tray-head">
+        <label id="tray-label" for="log-input">Pasted log batch</label>
+        <button id="load-sample" type="button">Load sample</button>
+      </div>
+      <textarea id="log-input" rows="18" spellcheck="false"
+        placeholder="Paste log lines here. Blanks are skipped; original line numbers are kept."></textarea>
+      <div class="tray-actions">
+        <button id="digest" type="button">Make my brief</button>
+        <button id="copy" type="button" disabled>Copy brief</button>
+        <button id="clear" type="button">Clear</button>
+      </div>
+    </section>
+
+    <section class="brief" aria-labelledby="brief-label">
+      <div class="brief-head">
+        <h2 id="brief-label">Morning brief</h2>
+        <p class="draft-note">AI draft. Check the source lines before acting.</p>
+      </div>
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+      <div id="incidents" class="incidents" aria-live="polite"></div>
+      <p class="privacy">Runs through Ollama on this machine. Logs stay in memory. Masking catches common credential patterns, not every secret.</p>
+    </section>
+  </main>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>
